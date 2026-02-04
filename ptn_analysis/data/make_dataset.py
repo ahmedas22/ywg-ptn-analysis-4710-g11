@@ -310,19 +310,19 @@ def run_all(
     include = _parse_filter_values(include_dataset)
     exclude = _parse_filter_values(exclude_dataset)
 
+    def run_open_data_section() -> None:
+        """Run filtered Open Data loading section."""
+        _load_open_data_with_filters(include=include, exclude=exclude, limit=None)
+
+    def run_active_mobility_section() -> None:
+        """Run filtered active-mobility loading section."""
+        _load_active_mobility_with_filters(include=include, exclude=exclude)
+
     sections: list[tuple[str, str, Callable[[], None]]] = [
         ("gtfs", "GTFS", gtfs),
         ("boundaries", "BOUNDARIES", boundaries),
-        (
-            "open-data",
-            "OPEN DATA",
-            lambda: _load_open_data_with_filters(include=include, exclude=exclude, limit=None),
-        ),
-        (
-            "active-mobility",
-            "ACTIVE MOBILITY",
-            lambda: _load_active_mobility_with_filters(include=include, exclude=exclude),
-        ),
+        ("open-data", "OPEN DATA", run_open_data_section),
+        ("active-mobility", "ACTIVE MOBILITY", run_active_mobility_section),
         ("graph", "GRAPH", graph),
     ]
 

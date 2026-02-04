@@ -41,3 +41,7 @@ htmlcov/
 # MkDocs
 /site
 docs/site/
+
+# local databases
+data/processed/*.duckdb
+notebooks/data/processed/*.duckdb

@@ -291,6 +291,22 @@ def _load_analysis_functions():
     return get_stops_with_coords, get_edges_with_routes, get_neighbourhood_coverage, get_neighbourhood_geodata
 
 
+def _coverage_category(stops_per_km2: float) -> str:
+    """Map stop density to categorical coverage label.
+
+    Args:
+        stops_per_km2: Stop density value.
+
+    Returns:
+        Coverage category (High/Medium/Low).
+    """
+    if stops_per_km2 >= 5:
+        return "High"
+    if stops_per_km2 >= 1:
+        return "Medium"
+    return "Low"
+
+
 @st.cache_data
 def load_data():
     """Load and cache all visualization data."""
@@ -302,9 +318,7 @@ def load_data():
     coverage = get_neighbourhood_coverage()
     coverage_gdf = get_neighbourhood_geodata()
 
-    coverage["coverage_category"] = coverage["stops_per_km2"].apply(
-        lambda x: "High" if x >= 5 else ("Medium" if x >= 1 else "Low")
-    )
+    coverage["coverage_category"] = coverage["stops_per_km2"].apply(_coverage_category)
 
     return stops, edges, coverage, coverage_gdf
 

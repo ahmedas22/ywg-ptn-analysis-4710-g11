@@ -32,8 +32,13 @@ MODELS_DIR: Path = PROJ_ROOT / "models"
 REPORTS_DIR: Path = PROJ_ROOT / "reports"
 FIGURES_DIR: Path = REPORTS_DIR / "figures"
 
-# DuckDB path - all data stored locally
-DUCKDB_PATH: Path = Path(os.getenv("DUCKDB_PATH", PROCESSED_DATA_DIR / "wpg_transit.duckdb"))
+# DuckDB path - normalize env override relative to project root, not caller cwd
+_duckdb_env = os.getenv("DUCKDB_PATH")
+if _duckdb_env:
+    _duckdb_path = Path(_duckdb_env).expanduser()
+    DUCKDB_PATH: Path = _duckdb_path if _duckdb_path.is_absolute() else (PROJ_ROOT / _duckdb_path)
+else:
+    DUCKDB_PATH: Path = PROCESSED_DATA_DIR / "wpg_transit.duckdb"
 
 GTFS_URL: str = os.getenv("GTFS_URL", "https://gtfs.winnipegtransit.com/google_transit.zip")
 
@@ -116,7 +121,16 @@ __all__ = [
 try:
     from tqdm import tqdm
 
-    logger.remove(0)
-    logger.add(lambda msg: tqdm.write(msg, end=""), colorize=True)
+    def _tqdm_sink(message: str) -> None:
+        """Write log lines through tqdm-safe output.
+
+        Args:
+            message: Log message rendered by Loguru.
+        """
+        tqdm.write(message, end="")
+
+    # Remove any existing handlers safely (important for notebook reloads)
+    logger.remove()
+    logger.add(_tqdm_sink, colorize=True)
 except ModuleNotFoundError:
     pass

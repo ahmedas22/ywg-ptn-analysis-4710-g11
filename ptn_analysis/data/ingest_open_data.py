@@ -8,6 +8,7 @@ from typing import Callable
 
 from loguru import logger
 import pandas as pd
+from pandas.errors import ParserError
 from tqdm import tqdm
 
 from ptn_analysis.config import DATASETS, RAW_DATA_DIR, WPG_OPEN_DATA_URL
@@ -39,6 +40,18 @@ class OpenDataLoadSpec:
     transformers: dict[str, Callable] | None = None
 
 
+def _to_numeric_series(series: pd.Series) -> pd.Series:
+    """Convert a pandas series to numeric values.
+
+    Args:
+        series: Input series.
+
+    Returns:
+        Numeric series with invalid values coerced to null.
+    """
+    return pd.to_numeric(series, errors="coerce")
+
+
 OPEN_DATA_SPECS: tuple[OpenDataLoadSpec, ...] = (
     OpenDataLoadSpec("pass_ups", "pass_ups", "open_data_pass_ups", "pass-up data"),
     OpenDataLoadSpec(
@@ -46,7 +59,7 @@ OPEN_DATA_SPECS: tuple[OpenDataLoadSpec, ...] = (
         "on_time",
         "open_data_on_time",
         "on-time performance data",
-        transformers={"deviation": lambda x: pd.to_numeric(x, errors="coerce")},
+        transformers={"deviation": _to_numeric_series},
     ),
     OpenDataLoadSpec("passenger_counts", "passenger_counts", "open_data_passenger_counts", "passenger count data"),
     OpenDataLoadSpec("cycling", "cycling", "open_data_cycling_network", "cycling network data", is_geojson=True),
@@ -154,43 +167,60 @@ def _load_csv_table(dataset_id: str, spec: OpenDataLoadSpec, limit: int | None =
         return 0
 
     csv_url = f"{WPG_OPEN_DATA_URL}/api/v3/views/{dataset_id}/export.csv"
-    csv_path = download_with_cache(
-        csv_url,
-        _dataset_cache_path(dataset_id, "csv"),
-        description=f"Export {spec.log_name} ({dataset_id})",
-        headers=_build_request_headers(),
-    )
+    csv_path = _dataset_cache_path(dataset_id, "csv")
 
-    if limit is not None:
-        df = pd.read_csv(csv_path, nrows=limit, low_memory=False)
-        df = _normalize_column_names(df)
-        df = _apply_transformers(df, spec.transformers)
-        bulk_insert_df(df, "raw", spec.table_name, if_exists="replace", log_insert=False)
-        logger.info(f"Loaded {len(df):,} rows to raw_{spec.table_name}")
-        return len(df)
+    def _download_csv() -> Path:
+        return download_with_cache(
+            csv_url,
+            csv_path,
+            description=f"Export {spec.log_name} ({dataset_id})",
+            headers=_build_request_headers(),
+        )
 
-    loaded_rows = 0
-    with tqdm(
-        total=None,
-        unit="rows",
-        unit_scale=True,
-        mininterval=0.5,
-        smoothing=0.1,
-        desc=f"Load {spec.log_name} ({dataset_id})",
-    ) as progress:
-        for chunk_number, chunk in enumerate(pd.read_csv(csv_path, chunksize=PAGE_SIZE, low_memory=False), start=1):
-            chunk = _normalize_column_names(chunk)
-            chunk = _apply_transformers(chunk, spec.transformers)
-            if chunk_number == 1:
-                bulk_insert_df(chunk, "raw", spec.table_name, if_exists="replace", log_insert=False)
-            else:
-                bulk_insert_df(chunk, "raw", spec.table_name, if_exists="append", log_insert=False)
+    _download_csv()
 
-            loaded_rows += len(chunk)
-            progress.update(len(chunk))
+    for attempt in (1, 2):
+        try:
+            if limit is not None:
+                df = pd.read_csv(csv_path, nrows=limit, low_memory=False)
+                df = _normalize_column_names(df)
+                df = _apply_transformers(df, spec.transformers)
+                bulk_insert_df(df, "raw", spec.table_name, if_exists="replace", log_insert=False)
+                logger.info(f"Loaded {len(df):,} rows to raw_{spec.table_name}")
+                return len(df)
 
-    logger.info(f"Loaded {loaded_rows:,} rows to raw_{spec.table_name}")
-    return loaded_rows
+            loaded_rows = 0
+            with tqdm(
+                total=None,
+                unit="rows",
+                unit_scale=True,
+                mininterval=0.5,
+                smoothing=0.1,
+                desc=f"Load {spec.log_name} ({dataset_id})",
+            ) as progress:
+                for chunk_number, chunk in enumerate(pd.read_csv(csv_path, chunksize=PAGE_SIZE, low_memory=False), start=1):
+                    chunk = _normalize_column_names(chunk)
+                    chunk = _apply_transformers(chunk, spec.transformers)
+                    if chunk_number == 1:
+                        bulk_insert_df(chunk, "raw", spec.table_name, if_exists="replace", log_insert=False)
+                    else:
+                        bulk_insert_df(chunk, "raw", spec.table_name, if_exists="append", log_insert=False)
+
+                    loaded_rows += len(chunk)
+                    progress.update(len(chunk))
+            logger.info(f"Loaded {loaded_rows:,} rows to raw_{spec.table_name}")
+            return loaded_rows
+        except ParserError as error:
+            if attempt == 2:
+                raise
+            logger.warning(
+                f"CSV parse failed for {spec.log_name} ({dataset_id}); clearing cache and retrying once: {error}"
+            )
+            if csv_path.exists():
+                csv_path.unlink()
+            _download_csv()
+
+    return 0
 
 
 def _quote_ident(name: str) -> str:

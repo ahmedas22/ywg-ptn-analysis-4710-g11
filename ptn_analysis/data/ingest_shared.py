@@ -66,10 +66,14 @@ def download_with_cache(
     Returns:
         Path to cached/downloaded file.
     """
-    if output_path.exists():
+    if output_path.exists() and output_path.stat().st_size > 0:
         return output_path
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output_path = output_path.with_suffix(f"{output_path.suffix}.part")
+    if tmp_output_path.exists():
+        tmp_output_path.unlink()
+
     with httpx.stream(
         "GET",
         url,
@@ -79,7 +83,7 @@ def download_with_cache(
     ) as response:
         response.raise_for_status()
         total_size = int(response.headers.get("content-length", 0))
-        with open(output_path, "wb") as output_file:
+        with open(tmp_output_path, "wb") as output_file:
             with tqdm(
                 total=total_size,
                 unit="B",
@@ -92,4 +96,6 @@ def download_with_cache(
                 for chunk in response.iter_bytes(chunk_size=chunk_size):
                     output_file.write(chunk)
                     progress.update(len(chunk))
+
+    tmp_output_path.replace(output_path)
     return output_path
