@@ -311,7 +311,9 @@ def get_frequency_summary(con: DuckDBPyConnection | None = None) -> dict:
             "peak_to_midday_ratio": 0,
         }
 
-    hourly_departures = trips_per_hour.groupby("service_hour")["trips_departing"].sum().reset_index()
+    hourly_departures = (
+        trips_per_hour.groupby("service_hour")["trips_departing"].sum().reset_index()
+    )
 
     peak_index = hourly_departures["trips_departing"].idxmax()
     peak_service_hour = int(hourly_departures.loc[peak_index, "service_hour"])

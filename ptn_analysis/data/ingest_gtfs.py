@@ -39,7 +39,9 @@ def _enforce_max_file_size(file_path: Path) -> None:
     """
     file_size_mb = file_path.stat().st_size / (1024 * 1024)
     if file_size_mb > MAX_FILE_SIZE_MB:
-        raise ValueError(f"File {file_path.name} ({file_size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit")
+        raise ValueError(
+            f"File {file_path.name} ({file_size_mb:.1f}MB) exceeds {MAX_FILE_SIZE_MB}MB limit"
+        )
 
 
 def _safe_extract_zip(zip_path: Path, extract_dir: Path) -> None:
@@ -236,7 +238,9 @@ def get_pre_ptn_feed_versions() -> list[GTFSFeedVersion]:
     Returns:
         Feed versions before June 29, 2025.
     """
-    return [version for version in fetch_transitland_feed_versions(limit=100) if version.is_pre_ptn]
+    return [
+        version for version in fetch_transitland_feed_versions(limit=100) if version.is_pre_ptn
+    ]
 
 
 def get_post_ptn_feed_versions() -> list[GTFSFeedVersion]:
@@ -245,7 +249,9 @@ def get_post_ptn_feed_versions() -> list[GTFSFeedVersion]:
     Returns:
         Feed versions after June 29, 2025.
     """
-    return [version for version in fetch_transitland_feed_versions(limit=100) if version.is_post_ptn]
+    return [
+        version for version in fetch_transitland_feed_versions(limit=100) if version.is_post_ptn
+    ]
 
 
 def get_ptn_transition_feed_versions() -> list[GTFSFeedVersion]:
@@ -261,7 +267,9 @@ def get_ptn_transition_feed_versions() -> list[GTFSFeedVersion]:
     ]
 
 
-def load_historical_gtfs_to_schema(feed_version: GTFSFeedVersion, schema_suffix: str) -> dict[str, int]:
+def load_historical_gtfs_to_schema(
+    feed_version: GTFSFeedVersion, schema_suffix: str
+) -> dict[str, int]:
     """Load historical GTFS into suffixed raw tables.
 
     Args:

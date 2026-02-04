@@ -131,7 +131,9 @@ def gtfs() -> None:
 @app.command()
 def boundaries() -> None:
     """Load boundary datasets and coverage aggregates."""
-    results = {config.log_name: ingest_open_data.load_boundary_table(config) for config in BOUNDARY_TABLES}
+    results = {
+        config.log_name: ingest_open_data.load_boundary_table(config) for config in BOUNDARY_TABLES
+    }
     transform.create_coverage_aggs()
 
     typer.echo("\nBoundary loading complete!")
@@ -185,7 +187,9 @@ def service(date: str) -> None:
 
 @app.command("historical")
 def historical(
-    period: str = typer.Argument(..., help="Period: 'pre-ptn', 'post-ptn', 'transition', or 'list'"),
+    period: str = typer.Argument(
+        ..., help="Period: 'pre-ptn', 'post-ptn', 'transition', or 'list'"
+    ),
 ) -> None:
     """Load historical GTFS data for PTN comparisons."""
     if period == "list":
@@ -248,7 +252,9 @@ def _load_open_data_with_filters(
     Returns:
         Loaded row counts by logical dataset key.
     """
-    results = ingest_open_data.load_standard_open_data_tables(limit=limit, include=include, exclude=exclude)
+    results = ingest_open_data.load_standard_open_data_tables(
+        limit=limit, include=include, exclude=exclude
+    )
     transform.create_route_summary_aggs()
     return results
 

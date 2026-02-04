@@ -288,7 +288,12 @@ def _load_analysis_functions():
         get_stops_with_coords,
     )
 
-    return get_stops_with_coords, get_edges_with_routes, get_neighbourhood_coverage, get_neighbourhood_geodata
+    return (
+        get_stops_with_coords,
+        get_edges_with_routes,
+        get_neighbourhood_coverage,
+        get_neighbourhood_geodata,
+    )
 
 
 def _coverage_category(stops_per_km2: float) -> str:
@@ -310,9 +315,12 @@ def _coverage_category(stops_per_km2: float) -> str:
 @st.cache_data
 def load_data():
     """Load and cache all visualization data."""
-    get_stops_with_coords, get_edges_with_routes, get_neighbourhood_coverage, get_neighbourhood_geodata = (
-        _load_analysis_functions()
-    )
+    (
+        get_stops_with_coords,
+        get_edges_with_routes,
+        get_neighbourhood_coverage,
+        get_neighbourhood_geodata,
+    ) = _load_analysis_functions()
     stops = get_stops_with_coords()
     edges = get_edges_with_routes()
     coverage = get_neighbourhood_coverage()

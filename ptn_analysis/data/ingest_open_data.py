@@ -61,9 +61,18 @@ OPEN_DATA_SPECS: tuple[OpenDataLoadSpec, ...] = (
         "on-time performance data",
         transformers={"deviation": _to_numeric_series},
     ),
-    OpenDataLoadSpec("passenger_counts", "passenger_counts", "open_data_passenger_counts", "passenger count data"),
-    OpenDataLoadSpec("cycling", "cycling", "open_data_cycling_network", "cycling network data", is_geojson=True),
-    OpenDataLoadSpec("walkways", "walkways", "open_data_walkways", "walkways data", is_geojson=True),
+    OpenDataLoadSpec(
+        "passenger_counts",
+        "passenger_counts",
+        "open_data_passenger_counts",
+        "passenger count data",
+    ),
+    OpenDataLoadSpec(
+        "cycling", "cycling", "open_data_cycling_network", "cycling network data", is_geojson=True
+    ),
+    OpenDataLoadSpec(
+        "walkways", "walkways", "open_data_walkways", "walkways data", is_geojson=True
+    ),
 )
 
 ACTIVE_MOBILITY_SPECS = tuple(spec for spec in OPEN_DATA_SPECS if spec.is_geojson)
@@ -114,7 +123,9 @@ def _dataset_cache_path(dataset_id: str, extension: str) -> Path:
     return RAW_DATA_DIR / f"{dataset_id}.{extension}"
 
 
-def _apply_transformers(df: pd.DataFrame, transformers: dict[str, Callable] | None) -> pd.DataFrame:
+def _apply_transformers(
+    df: pd.DataFrame, transformers: dict[str, Callable] | None
+) -> pd.DataFrame:
     """Apply configured column transformers.
 
     Args:
@@ -198,13 +209,19 @@ def _load_csv_table(dataset_id: str, spec: OpenDataLoadSpec, limit: int | None =
                 smoothing=0.1,
                 desc=f"Load {spec.log_name} ({dataset_id})",
             ) as progress:
-                for chunk_number, chunk in enumerate(pd.read_csv(csv_path, chunksize=PAGE_SIZE, low_memory=False), start=1):
+                for chunk_number, chunk in enumerate(
+                    pd.read_csv(csv_path, chunksize=PAGE_SIZE, low_memory=False), start=1
+                ):
                     chunk = _normalize_column_names(chunk)
                     chunk = _apply_transformers(chunk, spec.transformers)
                     if chunk_number == 1:
-                        bulk_insert_df(chunk, "raw", spec.table_name, if_exists="replace", log_insert=False)
+                        bulk_insert_df(
+                            chunk, "raw", spec.table_name, if_exists="replace", log_insert=False
+                        )
                     else:
-                        bulk_insert_df(chunk, "raw", spec.table_name, if_exists="append", log_insert=False)
+                        bulk_insert_df(
+                            chunk, "raw", spec.table_name, if_exists="append", log_insert=False
+                        )
 
                     loaded_rows += len(chunk)
                     progress.update(len(chunk))
@@ -280,14 +297,20 @@ def _load_geojson_table(
         available_areas = [column for column in area_fields if column in columns]
 
         if available_names:
-            name_expr = "COALESCE(" + ", ".join(_quote_ident(column) for column in available_names) + ")"
+            name_expr = (
+                "COALESCE(" + ", ".join(_quote_ident(column) for column in available_names) + ")"
+            )
         else:
             name_expr = "'Unknown'"
 
         if available_areas:
-            area_expr = "COALESCE(" + ", ".join(
-                f"TRY_CAST({_quote_ident(column)} AS DOUBLE)" for column in available_areas
-            ) + ", 0.0)"
+            area_expr = (
+                "COALESCE("
+                + ", ".join(
+                    f"TRY_CAST({_quote_ident(column)} AS DOUBLE)" for column in available_areas
+                )
+                + ", 0.0)"
+            )
         else:
             area_expr = "0.0"
 
@@ -301,7 +324,9 @@ def _load_geojson_table(
         """
 
     conn.execute(f"DROP TABLE IF EXISTS {full_table_name}")
-    conn.execute(f"CREATE TABLE {full_table_name} AS {select_sql.format(path=geojson_path.as_posix())}")
+    conn.execute(
+        f"CREATE TABLE {full_table_name} AS {select_sql.format(path=geojson_path.as_posix())}"
+    )
 
     row = conn.execute(f"SELECT COUNT(*) FROM {full_table_name}").fetchone()
     loaded_rows = row[0] if row else 0
@@ -330,7 +355,9 @@ def _load_open_data_spec(spec: OpenDataLoadSpec, limit: int | None = None) -> in
     return _load_csv_table(dataset_id, spec, limit=limit)
 
 
-def _spec_matches_filter(spec: OpenDataLoadSpec, include: set[str] | None = None, exclude: set[str] | None = None) -> bool:
+def _spec_matches_filter(
+    spec: OpenDataLoadSpec, include: set[str] | None = None, exclude: set[str] | None = None
+) -> bool:
     """Return whether a dataset spec passes include/exclude filters.
 
     Args:
@@ -384,7 +411,9 @@ def load_standard_open_data_tables(
     Returns:
         Mapping from dataset key to loaded row count.
     """
-    selected = [spec for spec in STANDARD_OPEN_DATA_SPECS if _spec_matches_filter(spec, include, exclude)]
+    selected = [
+        spec for spec in STANDARD_OPEN_DATA_SPECS if _spec_matches_filter(spec, include, exclude)
+    ]
     return {spec.result_key: _load_open_data_spec(spec, limit=limit) for spec in selected}
 
 
@@ -401,5 +430,7 @@ def load_active_mobility_datasets(
     Returns:
         Mapping from dataset key to loaded row count.
     """
-    selected = [spec for spec in ACTIVE_MOBILITY_SPECS if _spec_matches_filter(spec, include, exclude)]
+    selected = [
+        spec for spec in ACTIVE_MOBILITY_SPECS if _spec_matches_filter(spec, include, exclude)
+    ]
     return {spec.result_key: _load_open_data_spec(spec) for spec in selected}

@@ -139,7 +139,9 @@ def get_coverage_by_category(con: DuckDBPyConnection | None = None) -> pd.DataFr
     raise NotImplementedError("Sudipta: Implement this function")
 
 
-def detect_coverage_outliers(method: str = "iqr", con: DuckDBPyConnection | None = None) -> pd.DataFrame:
+def detect_coverage_outliers(
+    method: str = "iqr", con: DuckDBPyConnection | None = None
+) -> pd.DataFrame:
     """Flag high/low outliers in neighbourhood stop counts.
 
     Args:

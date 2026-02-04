@@ -126,7 +126,11 @@ def query_scalar(
     """Execute SQL and return first value from first row."""
     conn = resolve_con(con)
     prepared_sql = convert_schema_refs(sql)
-    row = conn.execute(prepared_sql, params).fetchone() if params else conn.execute(prepared_sql).fetchone()
+    row = (
+        conn.execute(prepared_sql, params).fetchone()
+        if params
+        else conn.execute(prepared_sql).fetchone()
+    )
     return row[0] if row else None
 
 

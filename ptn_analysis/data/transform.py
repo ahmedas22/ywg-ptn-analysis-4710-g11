@@ -38,7 +38,9 @@ def _run_sql_template(filename: str, replacements: dict[str, str]) -> None:
         sql_text = sql_text.replace(f"{{{{{key}}}}}", value)
     unresolved = re.findall(r"\{\{[^{}]+\}\}", sql_text)
     if unresolved:
-        raise ValueError(f"Unresolved SQL template placeholders in {filename}: {sorted(set(unresolved))}")
+        raise ValueError(
+            f"Unresolved SQL template placeholders in {filename}: {sorted(set(unresolved))}"
+        )
 
     statements = [stmt.strip() for stmt in sql_text.split(";") if stmt.strip()]
 
