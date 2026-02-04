@@ -1,0 +1,122 @@
+"""
+Configuration module for Winnipeg PTN Analysis.
+
+Provides centralized path constants, database path, and Winnipeg Open Data
+dataset identifiers used throughout the project.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import TypedDict
+
+from dotenv import load_dotenv
+from loguru import logger
+
+load_dotenv()
+
+PROJ_ROOT: Path = Path(__file__).resolve().parents[1]
+
+DATA_DIR: Path = PROJ_ROOT / "data"
+RAW_DATA_DIR: Path = DATA_DIR / "raw"
+INTERIM_DATA_DIR: Path = DATA_DIR / "interim"
+PROCESSED_DATA_DIR: Path = DATA_DIR / "processed"
+EXTERNAL_DATA_DIR: Path = DATA_DIR / "external"
+
+GTFS_DIR: Path = RAW_DATA_DIR / "gtfs"
+GTFS_ZIP_PATH: Path = RAW_DATA_DIR / "google_transit.zip"
+
+MODELS_DIR: Path = PROJ_ROOT / "models"
+
+REPORTS_DIR: Path = PROJ_ROOT / "reports"
+FIGURES_DIR: Path = REPORTS_DIR / "figures"
+
+# DuckDB path - all data stored locally
+DUCKDB_PATH: Path = Path(os.getenv("DUCKDB_PATH", PROCESSED_DATA_DIR / "wpg_transit.duckdb"))
+
+GTFS_URL: str = os.getenv("GTFS_URL", "https://gtfs.winnipegtransit.com/google_transit.zip")
+
+WPG_OPEN_DATA_URL: str = "https://data.winnipeg.ca"
+
+DATASETS: dict[str, str] = {
+    "neighbourhoods": "8k6x-xxsy",
+    "communities": "gfvw-fk34",
+    "cycling": "kjd9-dvf5",
+    "walkways": "jdeq-xf3y",
+    "pass_ups": "mer2-irmb",
+    "on_time": "gp3k-am4u",
+    "passenger_counts": "bv6q-du26",
+}
+
+SKIP_VALIDATION: bool = os.getenv("PTN_SKIP_VALIDATION", "").lower() in ("1", "true", "yes")
+
+
+class WpgBoundsType(TypedDict):
+    """Type definition for Winnipeg geographic bounds."""
+
+    min_lat: float
+    max_lat: float
+    min_lon: float
+    max_lon: float
+    center_lat: float
+    center_lon: float
+
+
+WPG_BOUNDS: WpgBoundsType = {
+    "min_lat": 49.75,
+    "max_lat": 50.00,
+    "min_lon": -97.35,
+    "max_lon": -96.95,
+    "center_lat": 49.8951,
+    "center_lon": -97.1384,
+}
+
+MAPBOX_TOKEN: str = os.getenv("MAPBOX_TOKEN", "")
+
+# PTN-specific constants
+PTN_LAUNCH_DATE: str = "2025-06-29"  # Winnipeg PTN launched June 29, 2025
+WPG_TRANSIT_API_URL: str = "https://api.winnipegtransit.com/v3"
+
+# Transitland API for historical GTFS archives
+TRANSITLAND_API_URL: str = "https://transit.land/api/v2/rest"
+TRANSITLAND_FEED_ID: str = "f-cbfg-winnipegtransit"
+TRANSITLAND_API_KEY: str = os.getenv("TRANSITLAND_API_KEY", "")
+
+# Historical GTFS storage
+GTFS_ARCHIVE_DIR: Path = RAW_DATA_DIR / "gtfs_archive"
+
+__all__ = [
+    "PROJ_ROOT",
+    "DATA_DIR",
+    "RAW_DATA_DIR",
+    "INTERIM_DATA_DIR",
+    "PROCESSED_DATA_DIR",
+    "EXTERNAL_DATA_DIR",
+    "GTFS_DIR",
+    "GTFS_ZIP_PATH",
+    "MODELS_DIR",
+    "REPORTS_DIR",
+    "FIGURES_DIR",
+    "DUCKDB_PATH",
+    "GTFS_URL",
+    "WPG_OPEN_DATA_URL",
+    "DATASETS",
+    "WPG_BOUNDS",
+    "MAPBOX_TOKEN",
+    "PTN_LAUNCH_DATE",
+    "WPG_TRANSIT_API_URL",
+    "TRANSITLAND_API_URL",
+    "TRANSITLAND_FEED_ID",
+    "TRANSITLAND_API_KEY",
+    "GTFS_ARCHIVE_DIR",
+    "SKIP_VALIDATION",
+]
+
+try:
+    from tqdm import tqdm
+
+    logger.remove(0)
+    logger.add(lambda msg: tqdm.write(msg, end=""), colorize=True)
+except ModuleNotFoundError:
+    pass

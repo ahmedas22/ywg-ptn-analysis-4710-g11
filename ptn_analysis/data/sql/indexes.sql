@@ -1,0 +1,10 @@
+CREATE INDEX IF NOT EXISTS idx_trips_route ON raw_gtfs_trips(route_id);
+CREATE INDEX IF NOT EXISTS idx_trips_service ON raw_gtfs_trips(service_id);
+CREATE INDEX IF NOT EXISTS idx_stop_times_trip ON raw_gtfs_stop_times(trip_id);
+CREATE INDEX IF NOT EXISTS idx_stop_times_stop ON raw_gtfs_stop_times(stop_id);
+CREATE INDEX IF NOT EXISTS idx_shapes_shape ON raw_gtfs_shapes(shape_id);
+CREATE INDEX IF NOT EXISTS idx_edges_from ON raw_gtfs_edges(from_stop_id);
+CREATE INDEX IF NOT EXISTS idx_edges_to ON raw_gtfs_edges(to_stop_id);
+CREATE INDEX IF NOT EXISTS idx_edges_route ON raw_gtfs_edges(route_id);
+CREATE INDEX IF NOT EXISTS idx_weighted_from ON raw_gtfs_edges_weighted(from_stop_id);
+CREATE INDEX IF NOT EXISTS idx_weighted_to ON raw_gtfs_edges_weighted(to_stop_id);
