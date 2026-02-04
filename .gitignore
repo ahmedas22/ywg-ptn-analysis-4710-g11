@@ -1,0 +1,43 @@
+# Data - ignore raw/interim, keep processed DuckDB
+/data/raw/
+/data/interim/
+/data/external/
+
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.env
+.venv
+venv/
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints
+
+# IDE
+.idea/
+.vscode/
+
+# Tools
+.ruff_cache/
+.mypy_cache/
+
+# MkDocs
+/site
+docs/site/
