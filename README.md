@@ -290,45 +290,6 @@ make open-data          # Load operational datasets
 make active-mobility    # Load cycling/walkway layers
 ```
 
-## Pipeline Snapshot (2026-02-03)
-
-Latest successful local run (`make data` + `python -m ptn_analysis.validate all`):
-
-- Pipeline completed end-to-end.
-- Validation passed for stops, routes, trips, and sampled stop_times.
-- Historical loading is implemented, but pre-PTN feed selection depends on Transitland availability/API access.
-
-Loaded table totals:
-
-- `24` tables
-- `8,928,140` rows total
-- Core heavy tables:
-  - `raw_open_data_on_time`: `5,329,339`
-  - `raw_open_data_passenger_counts`: `2,275,201`
-  - `raw_gtfs_stop_times`: `464,265`
-  - `raw_open_data_walkways`: `120,516`
-
-## Team Workflow (PR1 Stubs)
-
-Do not implement other teammates' stubs.
-
-- Ahmed: frequency + pipeline integration
-- Cathy: `ptn_analysis/analysis/network.py` (Issue #2)
-- Sudipta: `ptn_analysis/analysis/coverage.py` (Issue #4)
-- Stephenie: `ptn_analysis/analysis/visualization.py` (Issue #3)
-
-Expected workflow:
-
-1. Pull latest branch.
-2. Run `make data`.
-3. Implement only your assigned analysis module.
-4. Open PR linked to your issue.
-
-## Troubleshooting
-
-- If Open Data CSV parsing fails with `EOF inside string`, remove the cached dataset file from `data/raw/` and rerun `make data`.
-- If `TRANSITLAND_API_KEY` is missing, historical GTFS section is skipped without blocking the core pipeline.
-
 ## Methodology
 
 This project follows the [Cookiecutter Data Science](https://cookiecutter-data-science.drivendata.org/) template (v2) for reproducible analysis workflows.
