@@ -11,9 +11,9 @@ SELECT
     COALESCE(o.measurement_count, 0) AS ontime_measurements
 FROM ref_route_mapping r
 LEFT JOIN agg_route_passups_summary p
-    ON r.route_number_norm = UPPER(TRIM(CAST(p.route_id AS TEXT)))
+    ON r.route_number_norm = UPPER(TRIM(CAST(p.route_number AS TEXT)))
 LEFT JOIN agg_route_ontime_summary o
-    ON r.route_number_norm = UPPER(TRIM(CAST(o.route_id AS TEXT)));
+    ON r.route_number_norm = UPPER(TRIM(CAST(o.route_number AS TEXT)));
 
 DROP VIEW IF EXISTS v_stop_performance;
 CREATE VIEW v_stop_performance AS
