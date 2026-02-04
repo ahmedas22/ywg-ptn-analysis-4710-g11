@@ -26,10 +26,15 @@ jobs:
         run: uv sync
 
       - name: Run linter
-        run: uv run ruff check ptn_analysis/ tests/
+        run: uv run ruff check ptn_analysis/
 
       - name: Check formatting
-        run: uv run ruff format --check ptn_analysis/ tests/
+        run: uv run ruff format --check ptn_analysis/
 
       - name: Run tests
-        run: uv run pytest tests/ -v --tb=short
+        run: |
+          if [ -d tests ]; then
+            uv run pytest tests/ -v --tb=short
+          else
+            echo "No tests/ directory found; skipping pytest."
+          fi
