@@ -1,6 +1,6 @@
 # Winnipeg PTN Analysis - COMP 4710 Group 11
 
-.PHONY: help setup notebook dashboard lint format clean data validate open-data active-mobility status frequency
+.PHONY: help setup notebook dashboard lint format clean data open-data status frequency test
 
 .DEFAULT_GOAL := help
 
@@ -18,22 +18,21 @@ help:
 	@echo "  Code quality:"
 	@echo "    make lint        Check code with Ruff"
 	@echo "    make format      Auto-format code with Ruff"
-	@echo "    make validate    Validate GTFS data quality"
+	@echo "    make test        Run test suite"
 	@echo ""
 	@echo "  Data pipeline:"
-	@echo "    make data        Full pipeline (GTFS + boundaries + graph)"
-	@echo "    make open-data   Load Winnipeg Open Data datasets"
-	@echo "    make active-mobility   Load cycling and walkway datasets"
+	@echo "    make data        Full pipeline (GTFS + boundaries + Open Data + graph)"
+	@echo "    make open-data   Load Open Data tables only"
 	@echo "    make frequency DATE=YYYY-MM-DD   Materialize active trips"
 	@echo ""
-	@echo "  Other:"
+	@echo "  Cleanup:"
 	@echo "    make clean       Clear local data cache"
 
 setup:
 	@mkdir -p data/raw data/interim data/processed data/external reports/figures
 	@test -f .env || cp .env.example .env
 	uv venv --python 3.11
-	uv sync
+	uv sync --all-extras
 	@echo ""
 	@echo "Setup complete! Next steps:"
 	@echo "  1. source .venv/bin/activate"
@@ -52,16 +51,24 @@ format:
 	uv run ruff check --fix ptn_analysis/
 	uv run ruff format ptn_analysis/
 
+test:
+	uv run pytest tests/ -v
+
 clean:
 	rm -f data/processed/*.duckdb
 	rm -rf data/raw/gtfs/
+	rm -f data/raw/*.csv data/raw/*.geojson data/raw/*.zip
+	find data/raw -maxdepth 1 -type d -name "????-????_*" -exec rm -rf {} +
+	find data/raw -type f -name "*.part" -delete
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	@echo "Cleared. Run 'make data' to reload data."
+	@echo "Cleared. Run 'make data' to reload."
 
 data:
 	uv run python -m ptn_analysis.data.make_dataset all
-	uv run python -m ptn_analysis.validate all
 	@echo "Data pipeline complete!"
+
+status:
+	uv run python -m ptn_analysis.data.make_dataset status
 
 DATE ?= $(shell date +%Y-%m-%d)
 frequency:
@@ -70,12 +77,3 @@ frequency:
 
 open-data:
 	uv run python -m ptn_analysis.data.make_dataset open-data
-
-active-mobility:
-	uv run python -m ptn_analysis.data.make_dataset active-mobility
-
-validate:
-	uv run python -m ptn_analysis.validate all
-
-status:
-	uv run python -m ptn_analysis.data.make_dataset status

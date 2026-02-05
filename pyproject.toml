@@ -6,50 +6,56 @@ build-backend = "flit_core.buildapi"
 name = "ptn_analysis"
 version = "0.0.1"
 description = "Network Analysis of Winnipeg's 2025 Primary Transit Network - COMP 4710 Group 11"
+requires-python = ">=3.11"
 authors = [
   { name = "Group 11 (COMP 4710)" },
 ]
-
 readme = "README.md"
 classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "ipython",
-    "jupyterlab",
-    "loguru",
-    "matplotlib",
-    "notebook",
-    "numpy",
-    "pandas",
-    "scikit-learn",
-    "tqdm",
-    "typer",
-    "duckdb>=0.9.0",
-    "geopandas>=0.14.0",
-    "shapely>=2.0.0",
+    # Core
+    "duckdb>=1.1.0",
+    "pandas>=2.2.0",
+    "geopandas>=1.0.0",
     "networkx>=3.2.0",
-    "python-louvain>=0.16",
-    "peartree>=0.6.4",
-    "gtfs-segments>=2.1.2",
-    "osmnx>=2.0",
-    "movingpandas>=0.22",
+    "numpy",
+    # GTFS
     "gtfs-kit>=12.0",
-    "gtfs-functions>=2.7.0",
-    "r5py>=0.3",
-    "httpx>=0.26.0",
-    "sodapy>=2.2.0",
-    "streamlit>=1.30.0",
-    "keplergl>=0.3.0",
+    "gtfs-segments>=2.1.2",
+    # Data
+    "httpx>=0.28.0",
+    "typer>=0.12.0",
+    "tqdm>=4.66.0",
+    "python-dotenv>=1.0.0",
+    "loguru>=0.7.0",
+    "pooch>=1.8.0",
+    "osmnx>=2.0",
+    # Visualization
+    "folium>=0.18.0",
+    "matplotlib>=3.9.0",
+    "streamlit>=1.40.0",
+    "keplergl>=0.3.6",
     "streamlit-keplergl>=0.3.0",
-    "pandera>=0.18.0",
-    "python-dotenv",
-    "pip",
-    "ruff",
-    "mkdocs",
-    "pre-commit",
+    # Notebooks
+    "notebook>=7.2.0",
+    "jupyterlab>=4.2.0",
+    "ipython>=8.0.0",
+    # Dev
+    "ruff>=0.6.0",
+    "pre-commit>=3.8.0",
+    "pytest>=8.0.0",
 ]
-requires-python = "~=3.11.0"
+
+[project.optional-dependencies]
+geo = [
+    "movingpandas>=0.22",
+    "r5py>=0.3",
+]
+docs = [
+    "mkdocs>=1.6.0",
+]
 
 
 [tool.ruff]
@@ -63,3 +69,8 @@ extend-select = ["I"]
 [tool.ruff.lint.isort]
 known-first-party = ["ptn_analysis"]
 force-sort-within-sections = true
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.14",
+]

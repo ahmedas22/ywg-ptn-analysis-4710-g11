@@ -1,62 +1,53 @@
-"""Frequency analysis for transit service metrics."""
+"""Frequency analysis for transit service metrics.
+
+This module provides frequency/headway metrics by querying pre-computed
+gtfs-kit statistics tables (gtfs_route_stats, gtfs_stop_stats) stored in DuckDB.
+"""
+
+from __future__ import annotations
 
 from duckdb import DuckDBPyConnection
+from loguru import logger
 import pandas as pd
 
 from ptn_analysis.data.db import resolve_con
 
-
-def parse_gtfs_time(time_str: str) -> tuple[int, int, int]:
-    """Parse GTFS time string to (hour, minute, second).
-
-    Args:
-        time_str: Time in HH:MM:SS format (e.g., "25:30:00").
-
-    Returns:
-        Tuple of (hour, minute, second) as integers.
-
-    Raises:
-        ValueError: If time_str is not in valid HH:MM:SS format.
-    """
-    if not time_str or not isinstance(time_str, str):
-        raise ValueError(f"Invalid GTFS time: {time_str}")
-    parts = time_str.split(":")
-    if len(parts) != 3:
-        raise ValueError(f"Invalid GTFS time format: {time_str}")
-    try:
-        hour, minute, second = int(parts[0]), int(parts[1]), int(parts[2])
-    except ValueError as e:
-        raise ValueError(f"Invalid GTFS time: {time_str}") from e
-    if minute < 0 or minute > 59 or second < 0 or second > 59:
-        raise ValueError(f"Invalid GTFS time: {time_str}")
-    if hour < 0:
-        raise ValueError(f"Invalid GTFS time: {time_str}")
-    return hour, minute, second
+# Service window for gtfs-kit headway calculations (used in transform.py)
+SERVICE_DAY_START = "06:00:00"
+SERVICE_DAY_END = "22:00:00"
 
 
-def gtfs_time_to_minutes(time_str: str) -> int:
-    """Convert GTFS time string to minutes since midnight.
+def _get_default_service_date(con: DuckDBPyConnection) -> str:
+    """Get default service date from gtfs_route_stats or feed_info.
 
     Args:
-        time_str: Time in HH:MM:SS format.
+        con: DuckDB connection.
 
     Returns:
-        Minutes since midnight (can exceed 1440 for next-day times).
+        Service date in YYYY-MM-DD format.
     """
-    h, m, s = parse_gtfs_time(time_str)
-    return h * 60 + m
-
-
-def _has_active_trips_table(con: DuckDBPyConnection) -> bool:
-    """Check if agg_active_trips table exists in DuckDB."""
+    # Try gtfs_route_stats first
     try:
-        result = con.execute("""
-            SELECT COUNT(*) FROM information_schema.tables
-            WHERE table_name = 'agg_active_trips'
-        """).fetchone()
-        return result is not None and result[0] > 0
+        result = con.execute(
+            "SELECT MIN(date) FROM gtfs_route_stats WHERE date IS NOT NULL"
+        ).fetchone()
+        if result and result[0]:
+            return result[0]
     except Exception:
-        return False
+        pass
+
+    # Fall back to feed_info
+    try:
+        result = con.execute("SELECT feed_start_date FROM feed_info").fetchone()
+        if result and result[0]:
+            raw = str(result[0])
+            if len(raw) == 8:
+                return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+            return raw
+    except Exception:
+        pass
+
+    return "2026-01-15"  # Fallback date
 
 
 def get_route_direction_labels(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
@@ -84,8 +75,8 @@ def get_route_direction_labels(con: DuckDBPyConnection | None = None) -> pd.Data
                     PARTITION BY t.route_id, t.direction_id
                     ORDER BY COUNT(*) DESC, NULLIF(TRIM(t.trip_headsign), '')
                 ) AS rn
-            FROM raw_gtfs_trips t
-            JOIN raw_gtfs_routes r ON t.route_id = r.route_id
+            FROM trips t
+            JOIN routes r ON t.route_id = r.route_id
             GROUP BY t.route_id, r.route_short_name, t.direction_id, NULLIF(TRIM(t.trip_headsign), '')
         )
         SELECT
@@ -100,340 +91,228 @@ def get_route_direction_labels(con: DuckDBPyConnection | None = None) -> pd.Data
     return con.execute(query).fetchdf()
 
 
-def compute_trips_per_hour(
+def compute_route_frequency(
     service_date: str | None = None,
+    split_directions: bool = False,
     con: DuckDBPyConnection | None = None,
 ) -> pd.DataFrame:
-    """Compute route departures by service hour.
+    """Compute route-level frequency metrics from pre-computed gtfs_route_stats.
+
+    Uses the gtfs_route_stats table which is materialized by transform.py using
+    gtfs-kit's compute_route_stats().
 
     Args:
-        service_date: Optional date in YYYY-MM-DD format to filter by.
+        service_date: Date in ``YYYY-MM-DD`` format. If not provided, uses
+            the earliest available date in gtfs_route_stats.
+        split_directions: If True, return separate rows per direction_id.
+            If False, aggregate across directions.
         con: Optional DuckDB connection.
 
     Returns:
-        DataFrame with columns: route_id, route_name, service_hour, direction_id,
-        direction_label, trips_departing.
-
-    Raises:
-        ValueError: If service_date is provided but agg_active_trips table is unavailable.
+        DataFrame containing route-level trip counts, headways, and service metrics.
+        When split_directions=False, no direction_id column is included.
     """
     con = resolve_con(con)
 
-    if service_date:
-        if not _has_active_trips_table(con):
-            raise ValueError(
-                f"Cannot filter by service_date '{service_date}': agg_active_trips table "
-                f"not found. Run 'make frequency DATE={service_date}' to materialize active trips."
-            )
-        # Use active trips table with date filter
-        query = """
-            WITH trip_counts AS (
-                SELECT
-                    t.route_id,
-                    CAST(SPLIT_PART(st.departure_time, ':', 1) AS INTEGER) % 24 AS service_hour,
-                    t.direction_id,
-                    COUNT(DISTINCT t.trip_id) AS trips_departing
-                FROM raw_gtfs_stop_times st
-                JOIN agg_active_trips t ON st.trip_id = t.trip_id
-                WHERE st.stop_sequence = 1
-                  AND t.service_date = $1
-                GROUP BY t.route_id, service_hour, t.direction_id
-            ),
-            direction_labels AS (
-                SELECT
-                    t.route_id,
-                    t.direction_id,
-                    NULLIF(TRIM(t.trip_headsign), '') AS trip_headsign,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY t.route_id, t.direction_id
-                        ORDER BY COUNT(*) DESC, NULLIF(TRIM(t.trip_headsign), '')
-                    ) AS rn
-                FROM agg_active_trips t
-                WHERE t.service_date = $1
-                GROUP BY t.route_id, t.direction_id, NULLIF(TRIM(t.trip_headsign), '')
-            )
-            SELECT
-                tc.route_id,
-                r.route_short_name AS route_name,
-                tc.service_hour,
-                tc.direction_id,
-                COALESCE(dl.trip_headsign, 'Direction ' || CAST(tc.direction_id AS VARCHAR)) AS direction_label,
-                tc.trips_departing
-            FROM trip_counts tc
-            JOIN raw_gtfs_routes r ON r.route_id = tc.route_id
-            LEFT JOIN direction_labels dl
-                ON dl.route_id = tc.route_id
-               AND dl.direction_id = tc.direction_id
-               AND dl.rn = 1
-            ORDER BY route_name, tc.direction_id, tc.service_hour
-        """
-        return con.execute(query, [service_date]).fetchdf()
-    else:
-        query = """
-            WITH trip_counts AS (
-                SELECT
-                    t.route_id,
-                    CAST(SPLIT_PART(st.departure_time, ':', 1) AS INTEGER) % 24 AS service_hour,
-                    t.direction_id,
-                    COUNT(DISTINCT t.trip_id) AS trips_departing
-                FROM raw_gtfs_stop_times st
-                JOIN raw_gtfs_trips t ON st.trip_id = t.trip_id
-                WHERE st.stop_sequence = 1
-                GROUP BY t.route_id, service_hour, t.direction_id
-            ),
-            direction_labels AS (
-                SELECT
-                    t.route_id,
-                    t.direction_id,
-                    NULLIF(TRIM(t.trip_headsign), '') AS trip_headsign,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY t.route_id, t.direction_id
-                        ORDER BY COUNT(*) DESC, NULLIF(TRIM(t.trip_headsign), '')
-                    ) AS rn
-                FROM raw_gtfs_trips t
-                GROUP BY t.route_id, t.direction_id, NULLIF(TRIM(t.trip_headsign), '')
-            )
-            SELECT
-                tc.route_id,
-                r.route_short_name AS route_name,
-                tc.service_hour,
-                tc.direction_id,
-                COALESCE(dl.trip_headsign, 'Direction ' || CAST(tc.direction_id AS VARCHAR)) AS direction_label,
-                tc.trips_departing
-            FROM trip_counts tc
-            JOIN raw_gtfs_routes r ON r.route_id = tc.route_id
-            LEFT JOIN direction_labels dl
-                ON dl.route_id = tc.route_id
-               AND dl.direction_id = tc.direction_id
-               AND dl.rn = 1
-            ORDER BY route_name, tc.direction_id, tc.service_hour
-        """
-        return con.execute(query).fetchdf()
-
-
-def compute_headways(
-    route_id: str,
-    stop_id: str,
-    service_date: str | None = None,
-    con: DuckDBPyConnection | None = None,
-) -> pd.DataFrame:
-    """Compute headways (time between arrivals) at a stop for a route.
-
-    Args:
-        route_id: Route identifier.
-        stop_id: Stop identifier.
-        service_date: Optional date to filter active trips.
-        con: Optional DuckDB connection.
-
-    Returns:
-        DataFrame with columns: arrival_time, headway_minutes, direction_id.
-
-    Raises:
-        ValueError: If service_date is provided but agg_active_trips table is unavailable.
-    """
-    con = resolve_con(con)
-
-    if service_date:
-        if not _has_active_trips_table(con):
-            raise ValueError(
-                f"Cannot filter by service_date '{service_date}': agg_active_trips table "
-                f"not found. Run 'make frequency DATE={service_date}' to materialize active trips."
-            )
-        query = """
-            SELECT
-                st.arrival_time,
-                t.direction_id
-            FROM raw_gtfs_stop_times st
-            JOIN agg_active_trips t ON st.trip_id = t.trip_id
-            WHERE t.route_id = $1
-              AND st.stop_id = $2
-              AND t.service_date = $3
-            ORDER BY t.direction_id, st.arrival_time
-        """
-        df = con.execute(query, [route_id, stop_id, service_date]).fetchdf()
-    else:
-        query = """
-            SELECT
-                st.arrival_time,
-                t.direction_id
-            FROM raw_gtfs_stop_times st
-            JOIN raw_gtfs_trips t ON st.trip_id = t.trip_id
-            WHERE t.route_id = $1
-              AND st.stop_id = $2
-            ORDER BY t.direction_id, st.arrival_time
-        """
-        df = con.execute(query, [route_id, stop_id]).fetchdf()
-
-    if df.empty:
-        return pd.DataFrame(columns=["arrival_time", "headway_minutes", "direction_id"])
-
-    df["minutes"] = df["arrival_time"].apply(gtfs_time_to_minutes)
-
-    headways = []
-    for direction in df["direction_id"].unique():
-        dir_df = df[df["direction_id"] == direction].sort_values("minutes")
-        dir_df = dir_df.copy()
-        dir_df["headway_minutes"] = dir_df["minutes"].diff()
-        headways.append(dir_df)
-
-    result = pd.concat(headways, ignore_index=True)
-    return result[["arrival_time", "headway_minutes", "direction_id"]].dropna()
-
-
-def get_frequency_summary(con: DuckDBPyConnection | None = None) -> dict:
-    """Get network-level frequency summary metrics.
-
-    Args:
-        con: Optional DuckDB connection.
-
-    Returns:
-        Dictionary with keys:
-            total_trip_departures,
-            total_routes,
-            average_trips_per_route,
-            peak_service_hour,
-            peak_hour_trip_departures,
-            midday_average_hourly_departures,
-            peak_to_midday_ratio.
-    """
-    con = resolve_con(con)
-
-    trips_per_hour = compute_trips_per_hour(con=con)
-
-    if trips_per_hour.empty:
-        return {
-            "total_trip_departures": 0,
-            "total_routes": 0,
-            "average_trips_per_route": 0,
-            "peak_service_hour": 0,
-            "peak_hour_trip_departures": 0,
-            "midday_average_hourly_departures": 0,
-            "peak_to_midday_ratio": 0,
-        }
-
-    hourly_departures = (
-        trips_per_hour.groupby("service_hour")["trips_departing"].sum().reset_index()
+    # Check if gtfs_route_stats exists
+    has_stats = (
+        con.execute(
+            """
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'main' AND table_name = 'gtfs_route_stats'
+            """
+        ).fetchone()[0]
+        > 0
     )
 
-    peak_index = hourly_departures["trips_departing"].idxmax()
-    peak_service_hour = int(hourly_departures.loc[peak_index, "service_hour"])
-    peak_hour_trip_departures = int(hourly_departures.loc[peak_index, "trips_departing"])
+    if not has_stats:
+        logger.warning("gtfs_route_stats table not found. Run 'make data' to materialize metrics.")
+        return pd.DataFrame()
 
-    midday_window = hourly_departures[
-        (hourly_departures["service_hour"] >= 10) & (hourly_departures["service_hour"] <= 15)
-    ]
-    midday_average_hourly_departures = (
-        float(midday_window["trips_departing"].mean()) if not midday_window.empty else 0
-    )
+    if service_date is None:
+        service_date = _get_default_service_date(con)
+        logger.info(f"Using default service date: {service_date}")
 
-    total_routes = trips_per_hour["route_id"].nunique()
-
-    total_trip_departures = int(trips_per_hour["trips_departing"].sum())
-
-    return {
-        "total_trip_departures": total_trip_departures,
-        "total_routes": total_routes,
-        "average_trips_per_route": total_trip_departures / total_routes if total_routes > 0 else 0,
-        "peak_service_hour": peak_service_hour,
-        "peak_hour_trip_departures": peak_hour_trip_departures,
-        "midday_average_hourly_departures": midday_average_hourly_departures,
-        "peak_to_midday_ratio": (
-            peak_hour_trip_departures / midday_average_hourly_departures
-            if midday_average_hourly_departures > 0
-            else 0
-        ),
-    }
-
-
-def compute_route_frequency(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
-    """Compute route-level frequency metrics.
-
-    Args:
-        con: Optional DuckDB connection.
-
-    Returns:
-        DataFrame with columns:
-            route_id,
-            route_name,
-            total_trip_departures,
-            peak_period_trip_departures,
-            peak_period_avg_headway_minutes,
-            midday_avg_headway_minutes,
-            service_span_hours.
-    """
-    con = resolve_con(con)
-
-    query = """
-        WITH trip_times AS (
-            SELECT
-                t.route_id,
-                r.route_short_name as route_name,
-                CAST(SPLIT_PART(st.departure_time, ':', 1) AS INTEGER) as hour,
-                MIN(st.departure_time) as first_departure,
-                MAX(st.departure_time) as last_departure
-            FROM raw_gtfs_stop_times st
-            JOIN raw_gtfs_trips t ON st.trip_id = t.trip_id
-            JOIN raw_gtfs_routes r ON t.route_id = r.route_id
-            WHERE st.stop_sequence = 1
-            GROUP BY t.route_id, r.route_short_name, t.trip_id, hour
-        ),
-        route_stats AS (
+    if split_directions:
+        query = """
             SELECT
                 route_id,
-                route_name,
-                COUNT(*) as total_trip_departures,
-                SUM(CASE WHEN hour BETWEEN 7 AND 9 OR hour BETWEEN 16 AND 18 THEN 1 ELSE 0 END)
-                    as peak_period_trip_departures,
-                SUM(CASE WHEN hour BETWEEN 10 AND 15 THEN 1 ELSE 0 END)
-                    as midday_trip_departures,
-                MIN(first_departure) as first_trip,
-                MAX(last_departure) as last_trip
-            FROM trip_times
-            GROUP BY route_id, route_name
-        )
-        SELECT
-            route_id,
-            route_name,
-            total_trip_departures,
-            peak_period_trip_departures,
-            CASE
-                WHEN peak_period_trip_departures > 0
-                THEN ROUND(360.0 / peak_period_trip_departures, 1)
-                ELSE NULL
-            END as peak_period_avg_headway_minutes,
-            CASE
-                WHEN midday_trip_departures > 0
-                THEN ROUND(360.0 / midday_trip_departures, 1)
-                ELSE NULL
-            END as midday_avg_headway_minutes,
-            ROUND(
-                (
-                    (
-                        CAST(SPLIT_PART(last_trip, ':', 1) AS INTEGER) * 60 +
-                        CAST(SPLIT_PART(last_trip, ':', 2) AS INTEGER)
-                    ) -
-                    (
-                        CAST(SPLIT_PART(first_trip, ':', 1) AS INTEGER) * 60 +
-                        CAST(SPLIT_PART(first_trip, ':', 2) AS INTEGER)
-                    )
-                ) / 60.0,
-                2
-            ) as service_span_hours
-        FROM route_stats
-        ORDER BY total_trip_departures DESC
-    """
+                route_short_name,
+                direction_id,
+                num_trips,
+                mean_headway,
+                min_headway,
+                max_headway,
+                peak_num_trips,
+                service_duration,
+                service_speed,
+                start_time,
+                end_time,
+                service_distance,
+                mean_trip_distance,
+                mean_trip_duration
+            FROM gtfs_route_stats
+            WHERE date = ?
+            ORDER BY route_short_name, direction_id
+        """
+    else:
+        # Aggregate across directions - no direction_id in output
+        query = """
+            SELECT
+                route_id,
+                ANY_VALUE(route_short_name) AS route_short_name,
+                SUM(num_trips) AS num_trips,
+                AVG(mean_headway) AS mean_headway,
+                MIN(min_headway) AS min_headway,
+                MAX(max_headway) AS max_headway,
+                SUM(peak_num_trips) AS peak_num_trips,
+                MAX(service_duration) AS service_duration,
+                AVG(service_speed) AS service_speed,
+                MIN(start_time) AS start_time,
+                MAX(end_time) AS end_time,
+                SUM(service_distance) AS service_distance,
+                AVG(mean_trip_distance) AS mean_trip_distance,
+                AVG(mean_trip_duration) AS mean_trip_duration
+            FROM gtfs_route_stats
+            WHERE date = ?
+            GROUP BY route_id
+            ORDER BY route_short_name
+        """
 
-    return con.execute(query).fetchdf()
+    stats = con.execute(query, [service_date]).fetchdf()
+    logger.info(f"Retrieved frequency for {len(stats)} route groups")
+    return stats
+
+
+def compute_stop_headways(
+    stop_id: str,
+    service_date: str | None = None,
+    split_directions: bool = True,
+    con: DuckDBPyConnection | None = None,
+) -> pd.DataFrame:
+    """Compute stop-level headway statistics from pre-computed gtfs_stop_stats.
+
+    Uses the gtfs_stop_stats table which is materialized by transform.py using
+    gtfs-kit's compute_stop_stats().
+
+    Args:
+        stop_id: GTFS stop identifier.
+        service_date: Date in ``YYYY-MM-DD`` format. If not provided, uses
+            the earliest available date in gtfs_stop_stats.
+        split_directions: If True, return separate stats per direction.
+            If False, aggregate across directions.
+        con: Optional DuckDB connection.
+
+    Returns:
+        DataFrame with stop-level departure and headway metrics.
+    """
+    con = resolve_con(con)
+
+    # Check if gtfs_stop_stats exists
+    has_stats = (
+        con.execute(
+            """
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'main' AND table_name = 'gtfs_stop_stats'
+            """
+        ).fetchone()[0]
+        > 0
+    )
+
+    if not has_stats:
+        logger.warning("gtfs_stop_stats table not found. Run 'make data' to materialize metrics.")
+        return pd.DataFrame()
+
+    if service_date is None:
+        service_date = _get_default_service_date(con)
+        logger.info(f"Using default service date: {service_date}")
+
+    if split_directions:
+        query = """
+            SELECT
+                stop_id,
+                direction_id,
+                num_routes,
+                num_trips,
+                mean_headway,
+                min_headway,
+                max_headway,
+                start_time,
+                end_time
+            FROM gtfs_stop_stats
+            WHERE stop_id = ? AND date = ?
+        """
+        return con.execute(query, [stop_id, service_date]).fetchdf()
+    else:
+        query = """
+            SELECT
+                stop_id,
+                SUM(num_trips) AS num_trips,
+                MAX(num_routes) AS num_routes,
+                AVG(mean_headway) AS mean_headway,
+                MIN(min_headway) AS min_headway,
+                MAX(max_headway) AS max_headway,
+                MIN(start_time) AS start_time,
+                MAX(end_time) AS end_time
+            FROM gtfs_stop_stats
+            WHERE stop_id = ? AND date = ?
+            GROUP BY stop_id
+        """
+        return con.execute(query, [stop_id, service_date]).fetchdf()
+
+
+def get_frequency_summary(
+    service_date: str | None = None,
+    con: DuckDBPyConnection | None = None,
+) -> dict[str, float]:
+    """Get network-wide frequency summary statistics.
+
+    Args:
+        service_date: Date in YYYY-MM-DD format.
+        con: Optional DuckDB connection.
+
+    Returns:
+        Dictionary with summary metrics:
+            - total_routes: Number of routes operating
+            - total_trips: Total trips across network
+            - mean_headway_minutes: Network average headway
+            - routes_under_15min: Routes with <15min headway
+            - routes_under_30min: Routes with <30min headway
+    """
+    route_freq = compute_route_frequency(service_date, split_directions=False, con=con)
+
+    if route_freq.empty:
+        return {
+            "total_routes": 0,
+            "total_trips": 0,
+            "mean_headway_minutes": 0.0,
+            "routes_under_15min": 0,
+            "routes_under_30min": 0,
+        }
+
+    return {
+        "total_routes": len(route_freq),
+        "total_trips": int(route_freq["num_trips"].sum()),
+        "mean_headway_minutes": float(route_freq["mean_headway"].mean())
+        if "mean_headway" in route_freq.columns
+        else 0.0,
+        "routes_under_15min": int((route_freq["mean_headway"] < 15).sum())
+        if "mean_headway" in route_freq.columns
+        else 0,
+        "routes_under_30min": int((route_freq["mean_headway"] < 30).sum())
+        if "mean_headway" in route_freq.columns
+        else 0,
+    }
 
 
 def get_hourly_profile(
     route_id: str | None = None,
     con: DuckDBPyConnection | None = None,
 ) -> pd.DataFrame:
-    """Get hourly departure profile.
+    """Get hourly departure profile from DuckDB.
 
     Args:
-        route_id: Optional route to filter (None = all routes).
+        route_id: Optional filter by route.
         con: Optional DuckDB connection.
 
     Returns:
@@ -446,8 +325,8 @@ def get_hourly_profile(
             SELECT
                 CAST(SPLIT_PART(st.departure_time, ':', 1) AS INTEGER) % 24 as service_hour,
                 COUNT(DISTINCT st.trip_id) as trips_departing
-            FROM raw_gtfs_stop_times st
-            JOIN raw_gtfs_trips t ON st.trip_id = t.trip_id
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
             WHERE st.stop_sequence = 1
               AND t.route_id = $1
             GROUP BY service_hour
@@ -459,7 +338,7 @@ def get_hourly_profile(
             SELECT
                 CAST(SPLIT_PART(st.departure_time, ':', 1) AS INTEGER) % 24 as service_hour,
                 COUNT(DISTINCT st.trip_id) as trips_departing
-            FROM raw_gtfs_stop_times st
+            FROM stop_times st
             WHERE st.stop_sequence = 1
             GROUP BY service_hour
             ORDER BY service_hour
@@ -467,13 +346,69 @@ def get_hourly_profile(
         return con.execute(query).fetchdf()
 
 
+def get_departures_by_hour_by_route(
+    con: DuckDBPyConnection | None = None,
+) -> pd.DataFrame:
+    """Get hourly departure counts for each route using pre-computed view.
+
+    Uses the hourly_departures_by_route view for efficient retrieval.
+
+    Args:
+        con: Optional DuckDB connection.
+
+    Returns:
+        DataFrame with columns: route_id, route_short_name, route_long_name,
+        hour, departures.
+    """
+    con = resolve_con(con)
+
+    # Check if view exists
+    has_view = (
+        con.execute(
+            """
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'main' AND table_name = 'hourly_departures_by_route'
+            """
+        ).fetchone()[0]
+        > 0
+    )
+
+    if has_view:
+        return con.execute(
+            "SELECT * FROM hourly_departures_by_route ORDER BY route_short_name, hour"
+        ).fetchdf()
+
+    # Fallback: compute directly if view doesn't exist
+    logger.warning("hourly_departures_by_route view not found. Computing directly.")
+    query = """
+        SELECT
+            r.route_id,
+            r.route_short_name,
+            r.route_long_name,
+            CAST(SPLIT_PART(st.departure_time, ':', 1) AS INTEGER) % 24 AS hour,
+            COUNT(DISTINCT st.trip_id) AS departures
+        FROM stop_times st
+        JOIN trips t ON st.trip_id = t.trip_id
+        JOIN routes r ON t.route_id = r.route_id
+        WHERE st.stop_sequence = 1
+        GROUP BY r.route_id, r.route_short_name, r.route_long_name, hour
+        ORDER BY r.route_short_name, hour
+    """
+    return con.execute(query).fetchdf()
+
+
 def get_route_performance(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
     """Get route frequency combined with Open Data performance metrics.
 
-    Uses v_route_performance view which joins:
-    - GTFS routes (via ref_route_mapping)
-    - Pass-up counts (agg_route_passups_summary)
-    - On-time deviation (agg_route_ontime_summary)
+    Uses route_performance view which joins:
+    - GTFS routes
+    - Pass-up counts (route_passups view)
+    - On-time deviation (route_ontime view)
+
+    Note:
+        Open Data spans 2010-present while GTFS is current schedule.
+        Historical route changes (especially PTN launch June 2025)
+        may affect data quality for older records.
 
     Args:
         con: Optional DuckDB connection.
@@ -483,4 +418,4 @@ def get_route_performance(con: DuckDBPyConnection | None = None) -> pd.DataFrame
         passup_count, days_with_passups, avg_deviation_seconds, ontime_measurements.
     """
     con = resolve_con(con)
-    return con.execute("SELECT * FROM v_route_performance ORDER BY passup_count DESC").fetchdf()
+    return con.execute("SELECT * FROM route_performance ORDER BY passup_count DESC").fetchdf()

@@ -1,12 +1,11 @@
-CREATE OR REPLACE TABLE raw_gtfs_edges_weighted AS
+-- Build weighted connections (aggregated by stop pair)
+
+CREATE OR REPLACE TABLE stop_connections_weighted AS
 SELECT
     from_stop_id,
     to_stop_id,
     COUNT(*) AS trip_count,
     COUNT(DISTINCT route_id) AS route_count,
     LIST(DISTINCT route_id) AS routes
-FROM raw_gtfs_edges
+FROM stop_connections
 GROUP BY from_stop_id, to_stop_id;
-
-CREATE INDEX IF NOT EXISTS idx_weighted_from ON raw_gtfs_edges_weighted(from_stop_id);
-CREATE INDEX IF NOT EXISTS idx_weighted_to ON raw_gtfs_edges_weighted(to_stop_id);

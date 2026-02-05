@@ -12,22 +12,20 @@ from pathlib import Path
 from typing import TypedDict
 
 from dotenv import load_dotenv
-from loguru import logger
 
-load_dotenv()
+# Only load .env if it exists (avoids blocking on missing file)
+_env_file = Path(__file__).resolve().parents[1] / ".env"
+if _env_file.exists():
+    load_dotenv(_env_file)
 
 PROJ_ROOT: Path = Path(__file__).resolve().parents[1]
 
 DATA_DIR: Path = PROJ_ROOT / "data"
 RAW_DATA_DIR: Path = DATA_DIR / "raw"
-INTERIM_DATA_DIR: Path = DATA_DIR / "interim"
 PROCESSED_DATA_DIR: Path = DATA_DIR / "processed"
-EXTERNAL_DATA_DIR: Path = DATA_DIR / "external"
 
 GTFS_DIR: Path = RAW_DATA_DIR / "gtfs"
 GTFS_ZIP_PATH: Path = RAW_DATA_DIR / "google_transit.zip"
-
-MODELS_DIR: Path = PROJ_ROOT / "models"
 
 REPORTS_DIR: Path = PROJ_ROOT / "reports"
 FIGURES_DIR: Path = REPORTS_DIR / "figures"
@@ -54,8 +52,6 @@ DATASETS: dict[str, str] = {
     "passenger_counts": "bv6q-du26",
 }
 
-SKIP_VALIDATION: bool = os.getenv("PTN_SKIP_VALIDATION", "").lower() in ("1", "true", "yes")
-
 
 class WpgBoundsType(TypedDict):
     """Type definition for Winnipeg geographic bounds."""
@@ -81,7 +77,6 @@ MAPBOX_TOKEN: str = os.getenv("MAPBOX_TOKEN", "")
 
 # PTN-specific constants
 PTN_LAUNCH_DATE: str = "2025-06-29"  # Winnipeg PTN launched June 29, 2025
-WPG_TRANSIT_API_URL: str = "https://api.winnipegtransit.com/v3"
 
 # Transitland API for historical GTFS archives
 TRANSITLAND_API_URL: str = "https://transit.land/api/v2/rest"
@@ -95,12 +90,9 @@ __all__ = [
     "PROJ_ROOT",
     "DATA_DIR",
     "RAW_DATA_DIR",
-    "INTERIM_DATA_DIR",
     "PROCESSED_DATA_DIR",
-    "EXTERNAL_DATA_DIR",
     "GTFS_DIR",
     "GTFS_ZIP_PATH",
-    "MODELS_DIR",
     "REPORTS_DIR",
     "FIGURES_DIR",
     "DUCKDB_PATH",
@@ -110,27 +102,11 @@ __all__ = [
     "WPG_BOUNDS",
     "MAPBOX_TOKEN",
     "PTN_LAUNCH_DATE",
-    "WPG_TRANSIT_API_URL",
     "TRANSITLAND_API_URL",
     "TRANSITLAND_FEED_ID",
     "TRANSITLAND_API_KEY",
     "GTFS_ARCHIVE_DIR",
-    "SKIP_VALIDATION",
 ]
 
-try:
-    from tqdm import tqdm
-
-    def _tqdm_sink(message: str) -> None:
-        """Write log lines through tqdm-safe output.
-
-        Args:
-            message: Log message rendered by Loguru.
-        """
-        tqdm.write(message, end="")
-
-    # Remove any existing handlers safely (important for notebook reloads)
-    logger.remove()
-    logger.add(_tqdm_sink, colorize=True)
-except ModuleNotFoundError:
-    pass
+# Note: Loguru uses stderr by default, which works for both CLI and notebooks.
+# Avoid modifying handlers at import time as it can suppress CLI output.

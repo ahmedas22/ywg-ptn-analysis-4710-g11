@@ -1,4 +1,4 @@
-"""Data transformation steps executed from SQL files."""
+"""SQL execution and data transformation functions."""
 
 from datetime import datetime
 from pathlib import Path
@@ -6,188 +6,208 @@ import re
 
 from loguru import logger
 
-from ptn_analysis.data.db import count_rows, get_duckdb, query_all, validate_identifier
+from ptn_analysis.data.db import bulk_insert_df, get_duckdb
+from ptn_analysis.data.loaders import load_gtfs_feed
 
-DAY_COLUMNS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 SQL_DIR = Path(__file__).with_name("sql")
 
 
-def _run_sql_file(filename: str) -> None:
-    """Execute all SQL statements from a file under ``data/sql``.
+def run_sql(filename: str, **replacements: str) -> None:
+    """Execute SQL file with optional template replacement.
 
     Args:
-        filename: SQL file name located in ``ptn_analysis/data/sql``.
-    """
-    sql_text = (SQL_DIR / filename).read_text(encoding="utf-8")
-    statements = [stmt.strip() for stmt in sql_text.split(";") if stmt.strip()]
-
-    conn = get_duckdb()
-    for statement in statements:
-        conn.execute(statement)
-
-
-def _run_sql_template(filename: str, replacements: dict[str, str]) -> None:
-    """Execute a templated SQL file with placeholder replacement.
-
-    Args:
-        filename: SQL template file name in ``ptn_analysis/data/sql``.
-        replacements: Placeholder values for ``{{key}}`` template tokens.
-    """
-    sql_text = (SQL_DIR / filename).read_text(encoding="utf-8")
-    for key, value in replacements.items():
-        sql_text = sql_text.replace(f"{{{{{key}}}}}", value)
-    unresolved = re.findall(r"\{\{[^{}]+\}\}", sql_text)
-    if unresolved:
-        raise ValueError(
-            f"Unresolved SQL template placeholders in {filename}: {sorted(set(unresolved))}"
-        )
-
-    statements = [stmt.strip() for stmt in sql_text.split(";") if stmt.strip()]
-
-    conn = get_duckdb()
-    for statement in statements:
-        conn.execute(statement)
-
-
-def get_day_of_week_column(date: datetime) -> str:
-    """Get GTFS calendar day column for a date.
-
-    Args:
-        date: Target date.
-
-    Returns:
-        Day column name matching GTFS calendar format.
-    """
-    return DAY_COLUMNS[date.weekday()]
-
-
-def parse_target_date(target_date: str) -> tuple[str, str]:
-    """Parse target date and derive GTFS date/day identifiers.
-
-    Args:
-        target_date: Date string in ``YYYY-MM-DD`` format.
-
-    Returns:
-        Tuple of ``(target_date, day_column)``.
+        filename: SQL file name relative to sql/ directory.
+        **replacements: Template {{key}} replacements.
 
     Raises:
-        ValueError: If date format is invalid.
+        FileNotFoundError: If SQL file does not exist.
+        ValueError: If unresolved placeholders remain after replacement.
+        RuntimeError: If SQL execution fails.
     """
+    sql_path = SQL_DIR / filename
+    if not sql_path.exists():
+        raise FileNotFoundError(f"SQL file not found: {sql_path}")
+
+    sql_text = sql_path.read_text(encoding="utf-8")
+
+    for key, value in replacements.items():
+        sql_text = sql_text.replace(f"{{{{{key}}}}}", value)
+
+    unresolved = re.findall(r"\{\{[^{}]+\}\}", sql_text)
+    if unresolved:
+        raise ValueError(f"Unresolved placeholders in {filename}: {sorted(set(unresolved))}")
+
+    statements = [stmt.strip() for stmt in sql_text.split(";") if stmt.strip()]
+    conn = get_duckdb()
+
+    conn.execute("BEGIN TRANSACTION")
     try:
-        date_obj = datetime.strptime(target_date, "%Y-%m-%d")
+        for stmt in statements:
+            conn.execute(stmt)
+        conn.execute("COMMIT")
+        logger.debug(f"Executed {filename}")
+    except Exception as exc:
+        conn.execute("ROLLBACK")
+        raise RuntimeError(f"SQL failed in {filename}: {exc}") from exc
+
+
+def create_tables() -> None:
+    """Create all GTFS tables from DDL schema."""
+    logger.info("Creating database tables")
+    run_sql("schema.sql")
+
+
+def build_stop_connections() -> None:
+    """Build stop_connections table from stop_times and trips."""
+    logger.info("Building stop connections")
+    run_sql("build_edges.sql")
+
+
+def build_weighted_connections() -> None:
+    """Build stop_connections_weighted from stop_connections."""
+    logger.info("Building weighted connections")
+    run_sql("build_weighted_edges.sql")
+
+
+def materialize_daily_service(target_date: str) -> None:
+    """Create daily_service table for a target service date using gtfs-kit.
+
+    Uses gtfs-kit's restrict_to_dates() which correctly handles:
+    - calendar.txt service patterns (M-F, Sat, Sun)
+    - calendar_dates.txt exceptions (holidays, special service)
+
+    Args:
+        target_date: Service date in YYYY-MM-DD format.
+    """
+    # Validate date format
+    try:
+        datetime.strptime(target_date, "%Y-%m-%d")
     except ValueError as exc:
         raise ValueError(f"Invalid date format: {target_date}. Use YYYY-MM-DD.") from exc
 
-    day_column = get_day_of_week_column(date_obj)
-    return target_date, day_column
+    logger.info(f"Materializing daily service for {target_date}")
+
+    # Load feed and restrict to target date
+    feed = load_gtfs_feed()
+    date_str = target_date.replace("-", "")  # gtfs-kit uses YYYYMMDD format
+    restricted_feed = feed.restrict_to_dates([date_str])
+
+    conn = get_duckdb()
+    conn.execute("DROP TABLE IF EXISTS daily_service")
+
+    if restricted_feed.trips is None or restricted_feed.trips.empty:
+        logger.warning(f"No active trips found for {target_date}")
+        # Create empty table with correct schema
+        conn.execute(
+            """
+            CREATE TABLE daily_service (
+                trip_id VARCHAR,
+                route_id VARCHAR,
+                service_id VARCHAR,
+                trip_headsign VARCHAR,
+                direction_id INTEGER,
+                service_date VARCHAR
+            )
+            """
+        )
+    else:
+        # Add service_date column to DataFrame before inserting
+        trips_df = restricted_feed.trips.copy()
+        trips_df["service_date"] = target_date
+        logger.info(f"Found {len(trips_df)} active trips for {target_date}")
+
+        # Use DuckDB replacement scan - references DataFrame by variable name
+        conn.execute(
+            """
+            CREATE TABLE daily_service AS
+            SELECT DISTINCT
+                trip_id,
+                route_id,
+                service_id,
+                trip_headsign,
+                direction_id,
+                service_date
+            FROM trips_df
+            """
+        )
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_route ON daily_service(route_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_service ON daily_service(service_id)")
+    logger.info("Daily service table created")
 
 
-def build_edges_table() -> int:
-    """Build ``raw_gtfs_edges`` from GTFS stop times and trips.
-
-    Returns:
-        Number of rows in ``raw_gtfs_edges`` after build.
-    """
-    logger.info("Building network edges from stop_times")
-    _run_sql_file("build_edges.sql")
-    edge_count = count_rows("raw", "gtfs_edges")
-    logger.info(f"Created {edge_count:,} edges")
-    return edge_count
+def create_views() -> None:
+    """Create analysis views (coverage, performance)."""
+    logger.info("Creating analysis views")
+    run_sql("views.sql")
 
 
-def create_aggregated_edges() -> int:
-    """Build ``raw_gtfs_edges_weighted`` from ``raw_gtfs_edges``.
-
-    Returns:
-        Number of rows in ``raw_gtfs_edges_weighted`` after build.
-    """
-    logger.info("Creating weighted edges")
-    _run_sql_file("build_weighted_edges.sql")
-    edge_count = count_rows("raw", "gtfs_edges_weighted")
-    logger.info(f"Created {edge_count:,} weighted edges")
-    return edge_count
-
-
-def get_feed_date_range() -> tuple[str, str]:
-    """Return GTFS feed date range from ``raw_gtfs_feed_info``.
-
-    Returns:
-        Tuple of ``(start_date, end_date)`` formatted as ``YYYY-MM-DD``.
-
-    Raises:
-        ValueError: If feed metadata is unavailable.
-    """
-    result = query_all(
-        """
-        SELECT feed_start_date, feed_end_date
-        FROM raw_gtfs_feed_info
-        LIMIT 1
-        """
-    )
-    if not result:
-        raise ValueError("No feed_info found - run 'make data' first")
-
-    start_raw, end_raw = result[0][0], result[0][1]
-    try:
-        start_fmt = datetime.strptime(str(start_raw), "%Y%m%d").strftime("%Y-%m-%d")
-        end_fmt = datetime.strptime(str(end_raw), "%Y%m%d").strftime("%Y-%m-%d")
-    except ValueError as exc:
-        raise ValueError(f"Invalid feed date range values: {start_raw}, {end_raw}") from exc
-    return start_fmt, end_fmt
-
-
-def materialize_active_trips(target_date: str) -> int:
-    """Create ``agg_active_trips`` for a target service date.
-
-    Args:
-        target_date: Service date in ``YYYY-MM-DD`` format.
-
-    Returns:
-        Number of rows in ``agg_active_trips``.
-    """
-    target_date_sql, day_column = parse_target_date(target_date)
-    validate_identifier(day_column, "calendar_day")
-
-    logger.info(f"Materializing active trips for {target_date} ({day_column})")
-    _run_sql_template(
-        "materialize_active_trips.sql",
-        {
-            "target_date": target_date,
-            "date_gtfs": target_date_sql,
-            "day_column": day_column,
-        },
-    )
-
-    active_count = count_rows("agg", "active_trips")
-    logger.info(f"Materialized {active_count:,} active trips for {target_date}")
-    return active_count
-
-
-def create_coverage_aggs() -> None:
-    """Create coverage aggregate tables from spatial joins."""
-    logger.info("Creating coverage aggregation tables")
-    _run_sql_file("coverage_aggs.sql")
-
-
-def create_route_summary_aggs() -> None:
-    """Create route and stop performance aggregate tables."""
-    logger.info("Creating route summary aggregation tables")
-    _run_sql_file("route_summary_aggs.sql")
-
-
-def create_reference_tables() -> None:
-    """Create GTFS-to-Open-Data mapping tables."""
-    logger.info("Creating reference mapping tables")
-    _run_sql_file("reference_tables.sql")
-
-
-def create_performance_views() -> None:
-    """Create analysis-ready performance views."""
-    logger.info("Creating performance views")
-    _run_sql_file("performance_views.sql")
-
-
-def create_database_indexes() -> None:
-    """Create indexes for join-heavy analysis."""
+def create_indexes() -> None:
+    """Create database indexes for query performance."""
     logger.info("Creating indexes")
-    _run_sql_file("indexes.sql")
+    run_sql("indexes.sql")
+
+
+def materialize_gtfs_metrics() -> dict[str, int]:
+    """Materialize gtfs-kit route/stop metrics tables in DuckDB.
+
+    Metrics are computed from the current GTFS feed for every available service
+    date and stored as ``gtfs_route_stats`` and ``gtfs_stop_stats``.
+
+    Returns:
+        Dictionary containing inserted row counts for metric tables.
+    """
+    logger.info("Computing gtfs-kit metrics for all service dates")
+    feed = load_gtfs_feed()
+    dates = feed.get_dates()
+    if not dates:
+        raise ValueError("No service dates found in GTFS feed")
+
+    route_stats = feed.compute_route_stats(
+        dates=dates,
+        headway_start_time="06:00:00",
+        headway_end_time="22:00:00",
+        split_directions=True,
+    )
+    route_stats["date"] = (
+        route_stats["date"]
+        .astype(str)
+        .str.replace(
+            r"(\d{4})(\d{2})(\d{2})",
+            r"\1-\2-\3",
+            regex=True,
+        )
+    )
+    bulk_insert_df(route_stats, "", "gtfs_route_stats", if_exists="replace", log_insert=False)
+
+    stop_stats = feed.compute_stop_stats(
+        dates=dates,
+        headway_start_time="06:00:00",
+        headway_end_time="22:00:00",
+        split_directions=True,
+    )
+    stop_stats["date"] = (
+        stop_stats["date"]
+        .astype(str)
+        .str.replace(
+            r"(\d{4})(\d{2})(\d{2})",
+            r"\1-\2-\3",
+            regex=True,
+        )
+    )
+    bulk_insert_df(stop_stats, "", "gtfs_stop_stats", if_exists="replace", log_insert=False)
+
+    conn = get_duckdb()
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gtfs_route_stats_date ON gtfs_route_stats(date)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_gtfs_route_stats_route ON gtfs_route_stats(route_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gtfs_stop_stats_date ON gtfs_stop_stats(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gtfs_stop_stats_stop ON gtfs_stop_stats(stop_id)")
+
+    results = {"gtfs_route_stats": len(route_stats), "gtfs_stop_stats": len(stop_stats)}
+    logger.info(
+        f"Loaded {results['gtfs_route_stats']:,} rows → gtfs_route_stats; "
+        f"{results['gtfs_stop_stats']:,} rows → gtfs_stop_stats"
+    )
+    return results

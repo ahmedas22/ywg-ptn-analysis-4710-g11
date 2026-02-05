@@ -1,33 +1,30 @@
-"""Data pipeline API surface."""
+"""Data pipeline API.
 
-from ptn_analysis.data.db import get_duckdb
-from ptn_analysis.data.ingest_gtfs import download_gtfs, extract_gtfs, load_gtfs_table
-from ptn_analysis.data.ingest_open_data import (
-    load_active_mobility_datasets,
-    load_boundary_table,
-    load_standard_open_data_tables,
-)
-from ptn_analysis.data.schemas import (
-    BOUNDARY_TABLES,
-    GTFS_TABLES,
-)
-from ptn_analysis.data.transform import (
-    build_edges_table,
-    create_aggregated_edges,
-    materialize_active_trips,
-)
+Lazy-loaded exports to avoid blocking CLI startup.
+"""
 
 __all__ = [
     "get_duckdb",
-    "GTFS_TABLES",
-    "BOUNDARY_TABLES",
-    "download_gtfs",
-    "extract_gtfs",
-    "load_gtfs_table",
-    "load_boundary_table",
-    "load_standard_open_data_tables",
-    "load_active_mobility_datasets",
-    "build_edges_table",
-    "create_aggregated_edges",
-    "materialize_active_trips",
+    "query_df",
+    "load_gtfs_feed",
+    "get_feed_date_range",
 ]
+
+
+def __getattr__(name: str):
+    """Lazy load modules on first access."""
+    if name in ("get_duckdb", "query_df"):
+        from ptn_analysis.data.db import get_duckdb, query_df
+
+        globals()["get_duckdb"] = get_duckdb
+        globals()["query_df"] = query_df
+        return globals()[name]
+
+    if name in ("load_gtfs_feed", "get_feed_date_range"):
+        from ptn_analysis.data.loaders import get_feed_date_range, load_gtfs_feed
+
+        globals()["load_gtfs_feed"] = load_gtfs_feed
+        globals()["get_feed_date_range"] = get_feed_date_range
+        return globals()[name]
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

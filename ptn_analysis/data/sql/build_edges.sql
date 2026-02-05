@@ -1,4 +1,6 @@
-CREATE OR REPLACE TABLE raw_gtfs_edges AS
+-- Build stop_connections table from stop_times and trips
+
+CREATE OR REPLACE TABLE stop_connections AS
 WITH ordered_stops AS (
     SELECT
         st.trip_id,
@@ -15,8 +17,8 @@ WITH ordered_stops AS (
             PARTITION BY st.trip_id
             ORDER BY st.stop_sequence
         ) AS next_arrival_time
-    FROM raw_gtfs_stop_times st
-    JOIN raw_gtfs_trips t ON st.trip_id = t.trip_id
+    FROM stop_times st
+    JOIN trips t ON st.trip_id = t.trip_id
 )
 SELECT
     stop_id AS from_stop_id,
@@ -27,7 +29,3 @@ SELECT
     next_arrival_time AS arrival_time
 FROM ordered_stops
 WHERE next_stop_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_edges_from_stop ON raw_gtfs_edges(from_stop_id);
-CREATE INDEX IF NOT EXISTS idx_edges_to_stop ON raw_gtfs_edges(to_stop_id);
-CREATE INDEX IF NOT EXISTS idx_edges_route ON raw_gtfs_edges(route_id);
