@@ -1,39 +1,113 @@
-"""Visualization helpers for Stephenie."""
+"""Visualization module for Stephenie.
+
+Provides data loaders for Kepler.gl maps (dashboard) and Folium maps (notebooks).
+"""
+
+from typing import Any
 
 from duckdb import DuckDBPyConnection
+import folium
 import geopandas as gpd
 from loguru import logger
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
-from ptn_analysis.config import DATASETS, WPG_OPEN_DATA_URL
+
+from ptn_analysis.analysis.coverage import get_stops_per_neighbourhood
+from ptn_analysis.config import DATASETS, WPG_BOUNDS, WPG_OPEN_DATA_URL
 from ptn_analysis.data.db import query_df
+
+
+def get_kepler_config(
+    center_lat: float | None = None,
+    center_lon: float | None = None,
+    zoom: float = 11,
+) -> dict[str, Any]:
+    """Generate Kepler.gl configuration centered on Winnipeg.
+
+    Used by app.py dashboard.
+
+    Args:
+        center_lat: Map center latitude. Defaults to Winnipeg center.
+        center_lon: Map center longitude. Defaults to Winnipeg center.
+        zoom: Initial zoom level.
+
+    Returns:
+        Kepler.gl configuration dictionary.
+    """
+    if center_lat is None:
+        center_lat = WPG_BOUNDS["center_lat"]
+    if center_lon is None:
+        center_lon = WPG_BOUNDS["center_lon"]
+
+    return {
+        "version": "v1",
+        "config": {
+            "mapState": {
+                "latitude": center_lat,
+                "longitude": center_lon,
+                "zoom": zoom,
+                "pitch": 0,
+                "bearing": 0,
+            },
+            "mapStyle": {
+                "styleType": "light",
+                "visibleLayerGroups": {
+                    "label": True,
+                    "road": True,
+                    "building": True,
+                    "water": True,
+                    "land": True,
+                },
+            },
+        },
+    }
+
+
+def get_folium_map(
+    center_lat: float | None = None,
+    center_lon: float | None = None,
+    zoom: int = 12,
+    tiles: str = "CartoDB positron",
+) -> folium.Map:
+    """Create a Folium map centered on Winnipeg.
+
+    Used by Jupyter notebooks for open-source basemaps.
+
+    Args:
+        center_lat: Map center latitude. Defaults to Winnipeg center.
+        center_lon: Map center longitude. Defaults to Winnipeg center.
+        zoom: Initial zoom level.
+        tiles: Tile provider (CartoDB positron, OpenStreetMap, etc).
+
+    Returns:
+        Folium Map object.
+    """
+    if center_lat is None:
+        center_lat = WPG_BOUNDS["center_lat"]
+    if center_lon is None:
+        center_lon = WPG_BOUNDS["center_lon"]
+
+    return folium.Map(location=[center_lat, center_lon], zoom_start=zoom, tiles=tiles)
 
 
 def get_neighbourhood_coverage(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
     """Load neighbourhood coverage metrics.
 
     Args:
-        con: Optional DuckDB connection. Uses default if None.
+        con: Optional DuckDB connection.
 
     Returns:
         DataFrame with neighbourhood, area_km2, stop_count, stops_per_km2.
     """
-    return query_df(
-        """
-        SELECT neighbourhood, area_km2, stop_count, stops_per_km2
-        FROM agg_stops_per_neighbourhood
-        ORDER BY stop_count DESC
-        """,
-        con,
-    )
+    return get_stops_per_neighbourhood(con)
 
 
 def get_stops_with_coords(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
     """Load stops with coordinates and route counts.
 
     Args:
-        con: Optional DuckDB connection. Uses default if None.
+        con: Optional DuckDB connection.
 
     Returns:
         DataFrame with stop_id, stop_name, stop_lat, stop_lon, route_count.
@@ -42,10 +116,10 @@ def get_stops_with_coords(con: DuckDBPyConnection | None = None) -> pd.DataFrame
         """
         SELECT s.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
                COALESCE(e.route_count, 0) AS route_count
-        FROM raw_gtfs_stops s
+        FROM stops s
         LEFT JOIN (
             SELECT from_stop_id, SUM(route_count) AS route_count
-            FROM raw_gtfs_edges_weighted
+            FROM stop_connections_weighted
             GROUP BY from_stop_id
         ) e ON s.stop_id = e.from_stop_id
         """,
@@ -54,13 +128,13 @@ def get_stops_with_coords(con: DuckDBPyConnection | None = None) -> pd.DataFrame
 
 
 def get_edges_with_routes(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
-    """Load edges with stop coordinates.
+    """Load edges with stop coordinates for line visualization.
 
     Args:
-        con: Optional DuckDB connection. Uses default if None.
+        con: Optional DuckDB connection.
 
     Returns:
-        DataFrame with from/to stop IDs, from/to lat/lon, trip_count, route_count.
+        DataFrame with from/to stop IDs, lat/lon, trip_count, route_count.
     """
     return query_df(
         """
@@ -73,19 +147,19 @@ def get_edges_with_routes(con: DuckDBPyConnection | None = None) -> pd.DataFrame
             s2.stop_lon AS to_lon,
             e.trip_count,
             e.route_count
-        FROM raw_gtfs_edges_weighted e
-        JOIN raw_gtfs_stops s1 ON e.from_stop_id = s1.stop_id
-        JOIN raw_gtfs_stops s2 ON e.to_stop_id = s2.stop_id
+        FROM stop_connections_weighted e
+        JOIN stops s1 ON e.from_stop_id = s1.stop_id
+        JOIN stops s2 ON e.to_stop_id = s2.stop_id
         """,
         con,
     )
 
 
 def get_neighbourhood_geodata(con: DuckDBPyConnection | None = None) -> gpd.GeoDataFrame:
-    """Load neighbourhood geometries and join coverage metrics.
+    """Load neighbourhood geometries with coverage metrics.
 
     Args:
-        con: Optional DuckDB connection. Uses default if None.
+        con: Optional DuckDB connection.
 
     Returns:
         GeoDataFrame with geometry and coverage columns.
@@ -106,7 +180,6 @@ def get_neighbourhood_geodata(con: DuckDBPyConnection | None = None) -> gpd.GeoD
             return gpd.GeoDataFrame(stats)
 
         gdf = gdf.rename(columns={name_col: "neighbourhood"})
-
         gdf["match_name"] = gdf["neighbourhood"].str.upper()
         stats["match_name"] = stats["neighbourhood"].str.upper()
 
@@ -127,6 +200,11 @@ def get_neighbourhood_geodata(con: DuckDBPyConnection | None = None) -> gpd.GeoD
         return gpd.GeoDataFrame()
 
 
+# =============================================================================
+# STUBS FOR STEPHENIE
+# =============================================================================
+
+
 def create_coverage_bar_chart(
     top_n: int = 20,
     output_path: str = "reports/figures/coverage_bar.png",
@@ -139,14 +217,15 @@ def create_coverage_bar_chart(
         return
 
     df = df.sort_values("stop_count", ascending=False).head(top_n)
+    # For horizontal bars, sort ascending so the largest ends up on top after invert
+    df = df.sort_values("stop_count", ascending=True)
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     plt.figure(figsize=(9, 6))
     plt.barh(df["neighbourhood"], df["stop_count"])
-    plt.gca().invert_yaxis()
-    plt.title(f"Top {top_n} Neighbourhoods by Stop Count")
+    plt.title(f"Top {len(df)} Neighbourhoods by Stop Count")
     plt.xlabel("Stop Count")
     plt.tight_layout()
     plt.savefig(out, dpi=200)
@@ -181,15 +260,21 @@ def create_coverage_distribution_plot(
 
 
 def export_summary_stats(con: DuckDBPyConnection | None = None) -> dict:
-    """Return report-ready summary statistics."""
-    # Basic network stats
-    stops_n = query_df("SELECT COUNT(*) AS n FROM raw_gtfs_stops", con)["n"][0]
-    edges_n = query_df(
-        "SELECT COUNT(*) AS n FROM raw_gtfs_edges_weighted", con)["n"][0]
+    """Return report-ready summary statistics.
+
+    Args:
+        con: Optional DuckDB connection.
+
+    Returns:
+        Dictionary with network and coverage metrics.
+    """
+    # Network stats (aligned with current schema)
+    stops_n = int(query_df("SELECT COUNT(*) AS n FROM stops", con)["n"][0])
+    edges_n = int(query_df("SELECT COUNT(*) AS n FROM stop_connections_weighted", con)["n"][0])
 
     # Coverage stats
     cov = get_neighbourhood_coverage(con)
-    if cov.empty:
+    if cov is None or cov.empty:
         cov_stats = {
             "neighbourhoods_n": 0,
             "total_stops_in_neighbourhoods": 0,
@@ -206,13 +291,11 @@ def export_summary_stats(con: DuckDBPyConnection | None = None) -> dict:
             "stops_per_km2_max": float(cov["stops_per_km2"].max()),
         }
 
-    stats = {
-        "num_stops": int(stops_n),
-        "num_edges": int(edges_n),
+    return {
+        "num_stops": stops_n,
+        "num_edges": edges_n,
         **cov_stats,
     }
-
-    return stats
 
 
 def create_route_performance_chart(
@@ -278,14 +361,9 @@ def create_unified_map(
     edges = get_edges_with_routes() if "edges" in layers else pd.DataFrame()
     gdf = get_neighbourhood_geodata() if "coverage" in layers else None
 
-
     try:
         from keplergl import KeplerGl
-        from ptn_analysis.config import WPG_BOUNDS
-        from ptn_analysis.app import get_kepler_config
-
-        config = get_kepler_config(
-            WPG_BOUNDS["center_lat"], WPG_BOUNDS["center_lon"])
+        config = get_kepler_config(WPG_BOUNDS["center_lat"], WPG_BOUNDS["center_lon"])
         m = KeplerGl(height=700, config=config)
 
         if not stops.empty:
