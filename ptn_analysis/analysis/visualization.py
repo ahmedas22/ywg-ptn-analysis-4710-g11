@@ -50,15 +50,37 @@ def get_kepler_config(
                 "pitch": 0,
                 "bearing": 0,
             },
-            "mapStyle": {
-                "styleType": "light",
-                "visibleLayerGroups": {
-                    "label": True,
-                    "road": True,
-                    "building": True,
-                    "water": True,
-                    "land": True,
-                },
+            "mapStyle": {"styleType": "light"},
+            "visState": {
+                "layers": [
+                    {
+                        "id": "stops_layer",
+                        "type": "point",
+                        "config": {
+                            "dataId": "stops",
+                            "label": "Stops",
+                            "columns": {"lat": "stop_lat", "lng": "stop_lon"},
+                            "isVisible": True,
+                            "visConfig": {"radius": 4, "opacity": 0.7},
+                        },
+                    },
+                    {
+                        "id": "edges_layer",
+                        "type": "line",
+                        "config": {
+                            "dataId": "edges",
+                            "label": "Edges",
+                            "columns": {
+                                "lat0": "from_lat",
+                                "lng0": "from_lon",
+                                "lat1": "to_lat",
+                                "lng1": "to_lon",
+                            },
+                            "isVisible": True,
+                            "visConfig": {"thickness": 2, "opacity": 0.4},
+                        },
+                    },
+                ]
             },
         },
     }
@@ -270,7 +292,8 @@ def export_summary_stats(con: DuckDBPyConnection | None = None) -> dict:
     """
     # Network stats (aligned with current schema)
     stops_n = int(query_df("SELECT COUNT(*) AS n FROM stops", con)["n"][0])
-    edges_n = int(query_df("SELECT COUNT(*) AS n FROM stop_connections_weighted", con)["n"][0])
+    edges_n = int(
+        query_df("SELECT COUNT(*) AS n FROM stop_connections_weighted", con)["n"][0])
 
     # Coverage stats
     cov = get_neighbourhood_coverage(con)
@@ -310,7 +333,7 @@ def create_route_performance_chart(
     df = query_df(
         f"""
         SELECT route_short_name, passup_count, avg_deviation_seconds
-        FROM v_route_performance
+        FROM route_performance
         WHERE passup_count > 0
         ORDER BY passup_count DESC
         LIMIT {int(top_n)}
@@ -363,7 +386,8 @@ def create_unified_map(
 
     try:
         from keplergl import KeplerGl
-        config = get_kepler_config(WPG_BOUNDS["center_lat"], WPG_BOUNDS["center_lon"])
+        config = get_kepler_config(
+            WPG_BOUNDS["center_lat"], WPG_BOUNDS["center_lon"])
         m = KeplerGl(height=700, config=config)
 
         if not stops.empty:
@@ -373,7 +397,6 @@ def create_unified_map(
             m.add_data(data=edges, name="edges")
 
         if gdf is not None and hasattr(gdf, "geometry") and not gdf.empty:
-            # Kepler works well with GeoJSON strings
             m.add_data(data=gdf.to_json(), name="coverage")
 
         m.save_to_html(file_name=str(out), read_only=True)
@@ -384,7 +407,7 @@ def create_unified_map(
         logger.warning(
             f"Kepler.gl unavailable or failed ({e}); falling back to Folium.")
 
-    # ---- Folium fallback (still interactive + saved HTML) ----
+    # ---- Folium fallback  ----
     import folium
 
     # Winnipeg center (fallback)
