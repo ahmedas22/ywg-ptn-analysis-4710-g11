@@ -10,6 +10,8 @@ import folium
 import geopandas as gpd
 from loguru import logger
 import pandas as pd
+from pathlib import Path
+import matplotlib.pyplot as plt
 
 from ptn_analysis.analysis.coverage import get_stops_per_neighbourhood
 from ptn_analysis.config import DATASETS, WPG_BOUNDS, WPG_OPEN_DATA_URL
@@ -48,15 +50,37 @@ def get_kepler_config(
                 "pitch": 0,
                 "bearing": 0,
             },
-            "mapStyle": {
-                "styleType": "light",
-                "visibleLayerGroups": {
-                    "label": True,
-                    "road": True,
-                    "building": True,
-                    "water": True,
-                    "land": True,
-                },
+            "mapStyle": {"styleType": "light"},
+            "visState": {
+                "layers": [
+                    {
+                        "id": "stops_layer",
+                        "type": "point",
+                        "config": {
+                            "dataId": "stops",
+                            "label": "Stops",
+                            "columns": {"lat": "stop_lat", "lng": "stop_lon"},
+                            "isVisible": True,
+                            "visConfig": {"radius": 4, "opacity": 0.7},
+                        },
+                    },
+                    {
+                        "id": "edges_layer",
+                        "type": "line",
+                        "config": {
+                            "dataId": "edges",
+                            "label": "Edges",
+                            "columns": {
+                                "lat0": "from_lat",
+                                "lng0": "from_lon",
+                                "lat1": "to_lat",
+                                "lng1": "to_lon",
+                            },
+                            "isVisible": True,
+                            "visConfig": {"thickness": 2, "opacity": 0.4},
+                        },
+                    },
+                ]
             },
         },
     }
@@ -173,7 +197,8 @@ def get_neighbourhood_geodata(con: DuckDBPyConnection | None = None) -> gpd.GeoD
 
         name_col = next((c for c in gdf.columns if c.lower() == "name"), None)
         if not name_col:
-            logger.warning("Could not find name column in neighbourhood GeoJSON")
+            logger.warning(
+                "Could not find name column in neighbourhood GeoJSON")
             return gpd.GeoDataFrame(stats)
 
         gdf = gdf.rename(columns={name_col: "neighbourhood"})
@@ -206,24 +231,54 @@ def create_coverage_bar_chart(
     top_n: int = 20,
     output_path: str = "reports/figures/coverage_bar.png",
 ) -> None:
-    """Save top-N neighbourhood stop-count bar chart.
+    """Save top-N neighbourhood stop-count bar chart."""
+    df = get_neighbourhood_coverage().copy()
+    if df.empty:
+        logger.warning(
+            "No neighbourhood coverage data available for bar chart.")
+        return
 
-    Args:
-        top_n: Number of neighbourhoods to include.
-        output_path: Path for PNG output.
-    """
-    raise NotImplementedError("Stephenie: implement using matplotlib")
+    df = df.sort_values("stop_count", ascending=False).head(top_n)
+    # For horizontal bars, sort ascending so the largest ends up on top after invert
+    df = df.sort_values("stop_count", ascending=True)
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    plt.figure(figsize=(9, 6))
+    plt.barh(df["neighbourhood"], df["stop_count"])
+    plt.title(f"Top {len(df)} Neighbourhoods by Stop Count")
+    plt.xlabel("Stop Count")
+    plt.tight_layout()
+    plt.savefig(out, dpi=200)
+    plt.close()
+
+    logger.info(f"Saved coverage bar chart to {out}")
 
 
 def create_coverage_distribution_plot(
     output_path: str = "reports/figures/coverage_dist.png",
 ) -> None:
-    """Save histogram of neighbourhood stop counts.
+    """Save histogram of neighbourhood stop counts."""
+    df = get_neighbourhood_coverage().copy()
+    if df.empty:
+        logger.warning(
+            "No neighbourhood coverage data available for distribution plot.")
+        return
 
-    Args:
-        output_path: Path for PNG output.
-    """
-    raise NotImplementedError("Stephenie: implement using matplotlib")
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    plt.figure(figsize=(8, 5))
+    plt.hist(df["stop_count"], bins=20)
+    plt.title("Distribution of Stop Counts Across Neighbourhoods")
+    plt.xlabel("Stop Count")
+    plt.ylabel("Number of Neighbourhoods")
+    plt.tight_layout()
+    plt.savefig(out, dpi=200)
+    plt.close()
+
+    logger.info(f"Saved coverage distribution plot to {out}")
 
 
 def export_summary_stats(con: DuckDBPyConnection | None = None) -> dict:
@@ -233,32 +288,182 @@ def export_summary_stats(con: DuckDBPyConnection | None = None) -> dict:
         con: Optional DuckDB connection.
 
     Returns:
-        Dict with network, feed period, and coverage metrics.
+        Dictionary with network and coverage metrics.
     """
-    raise NotImplementedError("Stephenie: implement")
+    # Network stats (aligned with current schema)
+    stops_n = int(query_df("SELECT COUNT(*) AS n FROM stops", con)["n"][0])
+    edges_n = int(
+        query_df("SELECT COUNT(*) AS n FROM stop_connections_weighted", con)["n"][0])
+
+    # Coverage stats
+    cov = get_neighbourhood_coverage(con)
+    if cov is None or cov.empty:
+        cov_stats = {
+            "neighbourhoods_n": 0,
+            "total_stops_in_neighbourhoods": 0,
+            "stops_per_km2_min": None,
+            "stops_per_km2_median": None,
+            "stops_per_km2_max": None,
+        }
+    else:
+        cov_stats = {
+            "neighbourhoods_n": int(cov["neighbourhood"].nunique()),
+            "total_stops_in_neighbourhoods": int(cov["stop_count"].sum()),
+            "stops_per_km2_min": float(cov["stops_per_km2"].min()),
+            "stops_per_km2_median": float(cov["stops_per_km2"].median()),
+            "stops_per_km2_max": float(cov["stops_per_km2"].max()),
+        }
+
+    return {
+        "num_stops": stops_n,
+        "num_edges": edges_n,
+        **cov_stats,
+    }
 
 
 def create_route_performance_chart(
     top_n: int = 20,
     output_path: str = "reports/figures/route_performance.png",
 ) -> None:
-    """Save chart comparing pass-up counts and route performance.
+    """Save chart comparing pass-up counts and route performance."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
 
-    Args:
-        top_n: Number of routes to include.
-        output_path: Path for PNG output.
-    """
-    raise NotImplementedError("Stephenie: implement")
+    # View was provided in your spec
+    df = query_df(
+        f"""
+        SELECT route_short_name, passup_count, avg_deviation_seconds
+        FROM route_performance
+        WHERE passup_count > 0
+        ORDER BY passup_count DESC
+        LIMIT {int(top_n)}
+        """
+    )
+
+    if df.empty:
+        logger.warning(
+            "No route performance rows (passup_count > 0); skipping chart.")
+        return
+
+    # Sort for clean horizontal bars
+    df = df.sort_values("passup_count", ascending=True)
+
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.barh(df["route_short_name"], df["passup_count"])
+    ax1.set_xlabel("Pass-up count")
+    ax1.set_ylabel("Route")
+
+    # Second axis for deviation (optional, but useful)
+    ax2 = ax1.twiny()
+    ax2.plot(df["avg_deviation_seconds"], df["route_short_name"], marker="o")
+    ax2.set_xlabel("Avg deviation (seconds)")
+
+    plt.title(f"Top {len(df)} Routes by Pass-ups (with Avg Deviation)")
+    plt.tight_layout()
+    plt.savefig(out, dpi=200)
+    plt.close()
+
+    logger.info(f"Saved route performance chart to {out}")
 
 
 def create_unified_map(
     layers: list[str] | None = None,
     output_path: str = "reports/figures/transit_map.html",
 ) -> None:
-    """Build unified Kepler.gl map with selected layers.
+    """Build unified map with selected layers and save to HTML.
 
-    Args:
-        layers: Optional layer names to include.
-        output_path: Path for HTML output.
+    Uses Kepler.gl if installed; falls back to Folium if not.
     """
-    raise NotImplementedError("Stephenie: implement using keplergl")
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    if layers is None:
+        layers = ["stops", "edges", "coverage"]
+
+    stops = get_stops_with_coords() if "stops" in layers else pd.DataFrame()
+    edges = get_edges_with_routes() if "edges" in layers else pd.DataFrame()
+    gdf = get_neighbourhood_geodata() if "coverage" in layers else None
+
+    try:
+        from keplergl import KeplerGl
+        config = get_kepler_config(
+            WPG_BOUNDS["center_lat"], WPG_BOUNDS["center_lon"])
+        m = KeplerGl(height=700, config=config)
+
+        if not stops.empty:
+            m.add_data(data=stops, name="stops")
+
+        if not edges.empty:
+            m.add_data(data=edges, name="edges")
+
+        if gdf is not None and hasattr(gdf, "geometry") and not gdf.empty:
+            m.add_data(data=gdf.to_json(), name="coverage")
+
+        m.save_to_html(file_name=str(out), read_only=True)
+        logger.info(f"Saved unified Kepler map to {out}")
+        return
+
+    except Exception as e:
+        logger.warning(
+            f"Kepler.gl unavailable or failed ({e}); falling back to Folium.")
+
+    # ---- Folium fallback  ----
+    import folium
+
+    # Winnipeg center (fallback)
+    center_lat, center_lon = 49.8951, -97.1384
+    fmap = folium.Map(location=[center_lat, center_lon],
+                      zoom_start=11, tiles="CartoDB positron")
+
+    # Stops layer
+    if not stops.empty and {"stop_lat", "stop_lon"}.issubset(stops.columns):
+        fg_stops = folium.FeatureGroup(name="Stops", show=True)
+        for _, r in stops.iterrows():
+            folium.CircleMarker(
+                location=[r["stop_lat"], r["stop_lon"]],
+                radius=3,
+                fill=True,
+                fill_opacity=0.7,
+                popup=f"{r.get('stop_name', '')} ({r.get('stop_id', '')})",
+            ).add_to(fg_stops)
+        fg_stops.add_to(fmap)
+
+    # Edges layer
+    if not edges.empty and {"from_lat", "from_lon", "to_lat", "to_lon"}.issubset(edges.columns):
+        fg_edges = folium.FeatureGroup(name="Edges", show=True)
+        for _, r in edges.iterrows():
+            folium.PolyLine(
+                locations=[[r["from_lat"], r["from_lon"]],
+                           [r["to_lat"], r["to_lon"]]],
+                weight=1,
+                opacity=0.35,
+            ).add_to(fg_edges)
+        fg_edges.add_to(fmap)
+
+    # Coverage layer
+    if gdf is not None and hasattr(gdf, "geometry") and not gdf.empty:
+        fg_cov = folium.FeatureGroup(name="Coverage", show=True)
+
+        tooltip_fields = []
+        aliases = []
+        for f, a in [
+            ("neighbourhood", "Neighbourhood"),
+            ("stop_count", "Stop count"),
+            ("stops_per_km2", "Stops/km²"),
+        ]:
+            if f in gdf.columns:
+                tooltip_fields.append(f)
+                aliases.append(a)
+
+        folium.GeoJson(
+            gdf,
+            name="Coverage",
+            tooltip=folium.GeoJsonTooltip(
+                fields=tooltip_fields, aliases=aliases, localize=True),
+        ).add_to(fg_cov)
+
+        fg_cov.add_to(fmap)
+
+    folium.LayerControl(collapsed=False).add_to(fmap)
+    fmap.save(str(out))
+    logger.info(f"Saved unified Folium map to {out}")
