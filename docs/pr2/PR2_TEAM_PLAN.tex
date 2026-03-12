@@ -1,0 +1,273 @@
+\documentclass[10pt,letterpaper,twocolumn]{article}
+\usepackage[margin=0.65in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\setlist[itemize]{leftmargin=1.1em, itemsep=0.2em, topsep=0.2em}
+\setlist[enumerate]{leftmargin=1.2em, itemsep=0.2em, topsep=0.2em}
+\setlength{\columnsep}{0.25in}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.25em}
+
+\newcommand{\sectiontitle}[1]{\vspace{0.35em}\textbf{\large #1}\vspace{0.15em}}
+\newcommand{\subhead}[1]{\textbf{#1}}
+
+\title{\vspace{-1.2em}PR2 Team Lead Brief: Execution, Ownership, and Deliverables}
+\author{COMP 4710 Group 11}
+\date{March 5, 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{center}
+\small
+\textbf{How to use in meeting:} move section by section, lock decisions live, and end only after each owner has a concrete output contract.\\
+\textbf{Intent:} detailed ownership + methods + deliverables, minimal scheduling.
+\end{center}
+
+\sectiontitle{1) Non-Negotiable PR2 Scope}
+\begin{itemize}
+  \item Include all core analysis tracks: comparison, network, coverage, capacity, equity, walkability, and multi-city comparison.
+  \item Keep report and Streamlit synchronized: same metrics, same claims, same figure logic.
+  \item Final outputs must be regenerable through notebooks and reporting pipeline.
+  \item README must reflect actual pipeline with Mermaid diagram (no legacy/incorrect flow diagrams).
+  \item All claims in text must link to at least one figure/table.
+\end{itemize}
+
+\subhead{Out of scope unless critical}
+\begin{itemize}
+  \item New exploratory analysis that does not improve final recommendations.
+  \item One-off figure generation paths outside notebook/reporting workflow.
+\end{itemize}
+
+\sectiontitle{2) Team Contracts (Owner by Owner)}
+
+\subhead{Ahmed (Team Lead): Equity + Walkability + Final Synthesis}
+
+\subhead{Mission}
+\begin{itemize}
+  \item Produce the final recommendation narrative: where inequity is highest, where walkability limits access, and what should be prioritized first.
+\end{itemize}
+
+\subhead{Methods/math}
+\begin{itemize}
+  \item Need index from vulnerability indicators (normalized + weighted).
+  \item Service index from coverage/frequency/access indicators.
+  \item Equity gap: \texttt{need\_index - service\_index}.
+  \item Walkability index from normalized built-environment proxies.
+  \item Final priority score combining equity gap, walkability deficit, and strategic importance.
+\end{itemize}
+
+\subhead{Libraries}
+\begin{itemize}
+  \item \texttt{pandas}, \texttt{numpy}, \texttt{geopandas}, \texttt{duckdb}, \texttt{matplotlib}.
+\end{itemize}
+
+\subhead{Deliverables}
+\begin{itemize}
+  \item Equity outputs by neighborhood/corridor (table + visuals).
+  \item Walkability outputs tied to transit service.
+  \item Combined priority list for interventions.
+  \item Final policy implications narrative (report + presentation speaking points).
+\end{itemize}
+
+\subhead{Handoffs received}
+\begin{itemize}
+  \item Coverage priority outputs from Sudipta.
+  \item Capacity/reliability priorities from Cathy.
+\end{itemize}
+
+\subhead{Handoffs produced}
+\begin{itemize}
+  \item Final prioritized recommendation matrix for full team packaging.
+\end{itemize}
+
+\subhead{Acceptance check}
+\begin{itemize}
+  \item Recommendations are evidence-backed, ranked, and traceable to figures.
+\end{itemize}
+
+\vspace{0.4em}
+\subhead{Cathy: Capacity + Network Operations}
+
+\subhead{Mission}
+\begin{itemize}
+  \item Quantify operational stress and reliability risk, then map each issue to an intervention type.
+\end{itemize}
+
+\subhead{Methods/math}
+\begin{itemize}
+  \item Capacity proxy: \texttt{pphpd = departures\_per\_hour * vehicle\_capacity * load\_factor}.
+  \item Stress score from crowding, passups, delays, and reliability indicators.
+  \item Priority score: stress + equity modifier + strategic corridor modifier.
+  \item Tier diagnostics: compare stress/reliability across route tiers.
+\end{itemize}
+
+\subhead{Libraries}
+\begin{itemize}
+  \item \texttt{pandas}, \texttt{numpy}, \texttt{duckdb}, \texttt{matplotlib}, \texttt{networkx}, optional \texttt{seaborn}.
+\end{itemize}
+
+\subhead{Deliverables}
+\begin{itemize}
+  \item Route/corridor stress ranking outputs.
+  \item Reliability summary outputs (tier/time perspective).
+  \item Upgrade/intervention shortlist with rationale.
+  \item Transfer/operational network insight summary.
+\end{itemize}
+
+\subhead{Handoffs received}
+\begin{itemize}
+  \item Final equity weighting guidance from Ahmed.
+\end{itemize}
+
+\subhead{Handoffs produced}
+\begin{itemize}
+  \item Capacity intervention table for synthesis + dashboard + report.
+\end{itemize}
+
+\subhead{Acceptance check}
+\begin{itemize}
+  \item Every intervention has a measurable trigger and supporting evidence.
+\end{itemize}
+
+\sectiontitle{3) Team Contracts (continued)}
+
+\subhead{Sudipta: Coverage + Accessibility}
+
+\subhead{Mission}
+\begin{itemize}
+  \item Identify underserved areas and produce actionable coverage improvement priorities.
+\end{itemize}
+
+\subhead{Methods/math}
+\begin{itemize}
+  \item Spatial joins of service geometry to neighborhood units.
+  \item Coverage/accessibility thresholds based on service proximity + frequency.
+  \item Optional segmentation/clustering for neighborhood transit profile groups.
+  \item Underserved ranking combining low service and contextual need.
+\end{itemize}
+
+\subhead{Libraries}
+\begin{itemize}
+  \item \texttt{geopandas}, \texttt{pandas}, \texttt{numpy}, \texttt{duckdb}, \texttt{matplotlib}, optional \texttt{scikit-learn}.
+\end{itemize}
+
+\subhead{Deliverables}
+\begin{itemize}
+  \item Coverage outputs by neighborhood.
+  \item Accessibility and underserved-area outputs.
+  \item Coverage improvement priority outputs for report and app.
+  \item Canonical neighborhood coverage table for reuse by all members.
+\end{itemize}
+
+\subhead{Handoffs received}
+\begin{itemize}
+  \item Shared metric definitions (need/service) with Ahmed.
+\end{itemize}
+
+\subhead{Handoffs produced}
+\begin{itemize}
+  \item Neighborhood coverage priority data package for synthesis and visuals.
+\end{itemize}
+
+\subhead{Acceptance check}
+\begin{itemize}
+  \item Coverage rankings are reproducible and align with source geographic data.
+\end{itemize}
+
+\vspace{0.4em}
+\subhead{Stephenie: Visualization + Streamlit + Packaging}
+
+\subhead{Mission}
+\begin{itemize}
+  \item Deliver one coherent visual layer so report, dashboard, and deck present identical conclusions.
+\end{itemize}
+
+\subhead{Methods/implementation}
+\begin{itemize}
+  \item One consistent map/figure standard (legend, scale, labeling, style).
+  \item One figure registry with owner, section, filename, and status.
+  \item Dashboard sections built from finalized metric outputs (no separate logic).
+  \item Final consistency pass across all visual artifacts.
+\end{itemize}
+
+\subhead{Libraries}
+\begin{itemize}
+  \item \texttt{streamlit}, \texttt{matplotlib}, optional \texttt{plotly}, shared visualization helpers.
+\end{itemize}
+
+\subhead{Deliverables}
+\begin{itemize}
+  \item Final standardized figure package.
+  \item Streamlit pages for all PR2 sections.
+  \item Presentation visual kit.
+  \item Updated README Mermaid pipeline diagram.
+\end{itemize}
+
+\subhead{Acceptance check}
+\begin{itemize}
+  \item No metric drift: dashboard and report match exactly.
+\end{itemize}
+
+\sectiontitle{4) Cross-Team Rules You Enforce as Lead}
+\begin{itemize}
+  \item \textbf{Single metric dictionary}: metric name, formula, unit, source table, interpretation.
+  \item \textbf{Single figure registry}: owner, file, section, status, regeneration source.
+  \item \textbf{Single evidence map}: every claim maps to figure/table reference.
+  \item \textbf{Reproducibility gate}: output is not ``done'' until regenerable.
+  \item \textbf{Consistency gate}: section definitions cannot conflict.
+  \item \textbf{Narrative gate}: recommendations must be ranked and evidence-backed.
+\end{itemize}
+
+\subhead{Fast escalation protocol}
+\begin{itemize}
+  \item If a blocker appears, owner posts blocker + required input + who can unblock.
+  \item If definitions conflict, lead resolves one final definition and freezes it.
+  \item If integration quality degrades, freeze scope and finish consistency first.
+\end{itemize}
+
+\sectiontitle{5) Meeting Agenda (Detailed, but not schedule-heavy)}
+\begin{enumerate}
+  \item \textbf{Scope lock}: confirm non-negotiables and final outputs.
+  \item \textbf{Ahmed contract}: confirm equity/walkability formulas, outputs, and final synthesis responsibilities.
+  \item \textbf{Cathy contract}: confirm capacity stress logic, reliability interpretation, and intervention outputs.
+  \item \textbf{Sudipta contract}: confirm underserved definitions, coverage outputs, and handoff format.
+  \item \textbf{Stephenie contract}: confirm visual standards, Streamlit structure, and packaging conventions.
+  \item \textbf{Cross-team governance}: lock dictionary/registry/evidence-map ownership.
+  \item \textbf{Final lock}: each owner states final deliverables and acceptance criteria.
+\end{enumerate}
+
+\subhead{Questions to force clear commitments}
+\begin{itemize}
+  \item What is your exact output artifact list?
+  \item What formula/logic drives each ranked result?
+  \item What dependencies do you require from others?
+  \item What handoff format are you giving and receiving?
+  \item What is your acceptance test for ``done''?
+\end{itemize}
+
+\sectiontitle{6) Definition of Done (PR2)}
+\begin{itemize}
+  \item All required sections are complete and consistent.
+  \item Capacity and walkability are both explicit in findings and recommendations.
+  \item Multi-city comparison is included and interpretable.
+  \item Streamlit, report, and deck use one consistent metric story.
+  \item Final outputs regenerate from the agreed workflow.
+\end{itemize}
+
+\sectiontitle{7) Quick Close Script (Team Lead)}
+\begin{itemize}
+  \item ``Each owner is locked to specific outputs and acceptance tests.''
+  \item ``If it is not reproducible and traceable, it is not done.''
+  \item ``No conflicting metric definitions after this meeting.''
+  \item ``Recommendations must be ranked and evidence-backed.''
+\end{itemize}
+
+\end{document}

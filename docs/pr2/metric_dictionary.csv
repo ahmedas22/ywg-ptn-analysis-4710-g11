@@ -1,0 +1,12 @@
+metric_name,formula,unit,source_table,owner,notes
+mean_headway_minutes,average scheduled headway per route or stop,minutes,ywg_route_schedule_metrics,Ahmed,GTFS-derived scheduled metric
+scheduled_speed_kmh,average scheduled service speed,km/h,ywg_route_schedule_metrics,Ahmed,GTFS-derived scheduled metric
+stop_density_per_km2,stop_count / area_km2,stops per km2,ywg_neighbourhood_stop_count_density,Sudipta,Neighbourhood density metric
+stop_connection_count,number of scheduled stop-to-stop trip legs,count,ywg_stop_connection_counts,Cathy,Aggregated graph edge weight
+headway_improvement,headway_pre - headway_post,minutes,ywg_route_schedule_comparison_metrics,Ahmed,Positive means improvement
+speed_improvement,speed_post - speed_pre,km/h,ywg_route_schedule_comparison_metrics,Ahmed,Positive means improvement
+jobs_proxy_score,weighted establishment proxy by dissemination area,proxy units,ywg_da_jobs_proxy,Ahmed,Destination-side jobs proxy derived from CBP size bands
+jobs_access_score,stop_density_per_km2 * ln(jobs_proxy_score + 1),proxy units,ywg_neighbourhood_jobs_access_metrics,Ahmed,Neighbourhood employment-access proxy
+median_travel_seconds,Median GTFS travel time between consecutive stops (seconds),"ywg_stop_connection_counts",Numeric,Seconds,Median of positive travel times (>0) across all service runs
+weighted_betweenness,Betweenness centrality weighted by travel time (inverse = higher weight = shorter travel),"ywg_network_metrics, ywg_stop_analysis_ready",Numeric,Unitless 0-1,nx.betweenness_centrality(G weight=median_travel_seconds)
+path_travel_seconds,Estimated travel time for shortest path between hub stops (seconds),"ywg_transfer_burden_matrix",Numeric,Seconds,nx.shortest_path_length(G weight=median_travel_seconds)
