@@ -1,0 +1,8 @@
+claim_id,claim_text,figure_or_table,owner,status,notes
+C1,PTN changed scheduled service levels by corridor,headway_comparison.png,Ahmed,draft,
+C2,Some neighbourhoods remain structurally underserved after PTN,coverage_change_map.png,Sudipta,draft,
+C3,A small set of stops concentrates transfer and connectivity burden,transfer_heatmap.png,Cathy,draft,
+C4,Priority interventions should combine service stress and neighbourhood need,upgrade_priority.png,Ahmed,draft,
+C5,Dashboard and report use the same exported metrics,figure_registry.csv,Stephenie,draft,
+C6,PTN changed access to employment-heavy destinations,employment_access_change.png,Ahmed,draft,Uses jobs-proxy rather than exact job counts
+C7,Travel-time weighted centrality identifies structurally critical stops beyond simple degree,transfer_heatmap.png,Cathy,draft,Computed via nx.betweenness_centrality with weight=median_travel_seconds from ywg_stop_connection_counts

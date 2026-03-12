@@ -1,0 +1,391 @@
+% Compile TWICE for page numbers: pdflatex main.tex && pdflatex main.tex
+\documentclass[11pt]{article}
+% =========================================================
+% PACKAGES
+% =========================================================
+\usepackage[margin=0.7in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{placeins}
+\usepackage{float}
+\usepackage[shortlabels]{enumitem}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{amssymb}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{xurl}
+\usepackage{hyperref}
+\usepackage{lastpage}
+\usepackage{fancyhdr}
+% =========================================================
+% FORMATTING (match proposal style)
+% =========================================================
+\graphicspath{{figures/}}
+\setstretch{1.0}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\raggedbottom
+\sloppy
+\tolerance=1000
+\emergencystretch=3em
+\setlist[itemize]{topsep=1pt, itemsep=0pt, parsep=0pt, partopsep=0pt}
+\setlist[enumerate]{topsep=1pt, itemsep=0pt, parsep=0pt, partopsep=0pt}
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.5em}{}
+\titlespacing*{\section}{0pt}{0.8ex plus 0.2ex minus 0.2ex}{0.4ex plus 0.1ex}
+\titlespacing*{\subsection}{0pt}{0.6ex plus 0.2ex minus 0.2ex}{0.2ex plus 0.1ex}
+\setlength{\floatsep}{2pt plus 1pt minus 1pt}
+\setlength{\textfloatsep}{3pt plus 1pt minus 1pt}
+\setlength{\intextsep}{2pt plus 1pt minus 1pt}
+\captionsetup{font=footnotesize, labelfont=bf, skip=2pt}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue,
+  citecolor=black,
+  pdftitle={COMP 4710 Progress Report 1 - Group 11}
+}
+% =========================================================
+% HEADER AND FOOTER
+% =========================================================
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textbf{COMP 4710} - Progress Report 1}
+\rhead{Winter 2026}
+\cfoot{Page \thepage\ of \pageref{LastPage}}
+\setlength{\headheight}{14pt}
+% =========================================================
+\begin{document}
+\small
+% -- Title Block (matching proposal) --
+\begin{center}
+    {\LARGE \textbf{Network Analysis of Winnipeg's 2025\\Primary Transit Network Overhaul}}\\[0.4em]
+    {\large \textbf{COMP 4710 - Introduction to Data Mining}}\\
+    {\large (Winter 2026) | \textbf{Progress Report 1 - Group 11}}
+\end{center}
+\thispagestyle{fancy}
+
+\vspace{0.2em}
+\noindent\rule{\textwidth}{0.4pt}
+
+% ============================================================
+\section{Group Roles}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Member} & \textbf{Role} & \textbf{Primary Responsibilities} \\
+\midrule
+Ahmed Hasan & \textbf{Group Lead}, Data Eng. & Project coordination, GTFS pipeline, frequency analysis, GitHub management \\
+Cathy Li & Network Analysis & Graph construction, centrality metrics, clustering, connectivity analysis \\
+Stephenie Michael & Visualization \& Reporting & Data visualization, interactive GIS maps, report drafting, meeting minutes \\
+Sudipta Sarker & Coverage Analysis & Neighbourhood data integration, coverage gap analysis, outlier detection \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Meeting Schedule:} Weekly meetings coordinated via Lettuce Meet (\url{https://lettucemeet.com/}) with async communication through Telegram.
+
+\noindent\rule{\textwidth}{0.4pt}
+
+% ============================================================
+\section{Progress to Date}
+
+Our team has set up the project repository and implemented the core data pipeline. The repository follows the Cookiecutter Data Science template with a Makefile-driven workflow, organized into \texttt{data/}, \texttt{ptn\_analysis/}, \texttt{notebooks/} and \texttt{reports/} directories. Dependencies are managed with \texttt{uv} and all data is stored in a local DuckDB database.
+
+% ------------------------------
+\subsection{Data Pipeline \& Frequency Analysis (Ahmed)}
+
+Ahmed designed the reproducible data pipeline. It downloads Winnipeg Transit's GTFS feed and eight operational datasets from the City of Winnipeg Open Data portal, loading them into DuckDB with the spatial extension. Key decisions include using \texttt{pooch} for file caching with SHA-256 validation, \texttt{ThreadPoolExecutor} for parallel ingestion of paginated Winnipeg Open Data API endpoints (e.g.\ 5.98M on-time records in parallel batches of 50{,}000) and \texttt{gtfs-kit} for standardized frequency computation.
+
+Ahmed also built the frequency analysis module providing headway statistics, time-windowed analysis, span of service and PTN tier compliance checking. Shared Folium map utilities with colorblind-safe palettes were created for team use. Table~\ref{tab:db} shows the database inventory and Tables~\ref{tab:ptn}-\ref{tab:freq} summarize frequency outputs.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{l l r}
+\toprule
+\textbf{Category} & \textbf{Tables} & \textbf{Rows} \\
+\midrule
+GTFS Core & stops, routes, trips, stop\_times, calendar, shapes, etc. & 534{,}202 \\
+Network & stop\_connections, stop\_connections\_weighted & 457{,}858 \\
+Boundaries & neighbourhoods, community\_areas & 249 \\
+Open Data & pass\_ups, on-time perf., passenger counts, cycling, walkways, census & 8{,}327{,}905 \\
+Derived & gtfs\_route\_stats, gtfs\_stop\_stats & 486{,}282 \\
+\midrule
+\textbf{Total} & \textbf{23 tables + 8 SQL views} & \textbf{9.8M+ records} \\
+\bottomrule
+\end{tabular}
+\caption{DuckDB database contents after full pipeline execution.}
+\label{tab:db}
+\end{table}
+
+The PTN launched on June 29, 2025. The current GTFS feed covers Winter 2026 (Dec 14, 2025 - Apr 11, 2026), representing the post-PTN configuration. SQL views handle PTN tier classification, route speed comparison, neighbourhood coverage density and hourly departure patterns.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.05}
+\begin{minipage}[t]{0.44\textwidth}
+\centering
+\begin{tabular}{l r r l}
+\toprule
+\textbf{PTN Tier} & \textbf{Rts} & \textbf{Target} & \textbf{\% Met} \\
+\midrule
+Rapid Transit     & 1  & 4-10  & 100\% \\
+Frequent Express  & 3  & 5-15  & 100\% \\
+Frequent          & 5  & 10-15 & 80\%  \\
+Direct            & 7  & 10-15 & 57\%  \\
+Connector         & 10 & 15-30 & 90\%  \\
+Limited Span      & 13 & 30-60 & 100\% \\
+Community         & 32 & 30-60 & 97\%  \\
+\bottomrule
+\end{tabular}
+\captionof{table}{PTN tier route counts with headway targets (min) and compliance.}
+\label{tab:ptn}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.44\textwidth}
+\centering
+\begin{tabular}{l r}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Total routes operating & 71 \\
+Total weekday trips    & 3{,}600+ \\
+Network avg headway    & 32.4 min \\
+Routes $<$15 min headway & 12 \\
+Routes $<$30 min headway & 31 \\
+\bottomrule
+\end{tabular}
+\captionof{table}{Network-wide frequency summary.}
+\label{tab:freq}
+\end{minipage}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{ptn_network_map.png}
+        \caption{PTN routes colored by tier classification.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{headway_map.png}
+        \caption{Route headways colored by frequency tier.}
+    \end{subfigure}
+    \caption{Geographic analysis of route service levels and PTN tier classification.}
+    \label{fig:geo}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{frequency_4panel.png}
+        \caption{Hourly departures, frequency vs headway, headway distribution and PTN tier counts.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{speed_comparison.png}
+        \caption{Average bus speed vs 40 km/h car baseline by PTN tier.}
+    \end{subfigure}
+    \caption{Frequency analysis: service patterns and speed comparison across PTN tiers.}
+    \label{fig:freq}
+\end{figure}
+
+% ------------------------------
+\subsection{Network Construction \& Analysis (Cathy)}
+
+Cathy implemented the network analysis module using NetworkX. The transit network is modeled as a directed weighted graph where stops are nodes and stop-to-stop connections are edges weighted by trip count. Functions include graph construction from the \texttt{stop\_connections\_weighted} table, degree centrality, betweenness centrality, hub identification and Louvain community detection.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{network_map.png}
+        \caption{Geographic network layout (3{,}873 nodes, 4{,}427 edges).}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{network_graph.png}
+        \caption{Degree distribution and top 15 hub stops by connectivity.}
+    \end{subfigure}
+    \caption{Transit network graph structure and hub identification.}
+    \label{fig:network}
+\end{figure}
+
+% ------------------------------
+\subsection{Coverage \& Spatial Analysis (Sudipta)}
+
+Sudipta completed the coverage analysis deliverable by joining transit stops with neighbourhood and community boundaries. Work includes computing coverage statistics across 237 neighbourhoods (total stops, mean/median/std, zero-stop neighbourhoods), identifying underserved neighbourhoods using bottom-quartile threshold on stop density, detecting outliers via IQR method and ranking neighbourhoods by stops per km\textsuperscript{2}. Community-level comparisons include density ranks and coverage categories (High/Medium/Low).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{coverage_choropleth.png}
+        \caption{Stop density choropleth (stops/km\textsuperscript{2}).}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{neighbourhood_density_hist.png}
+        \caption{Stop density distribution across neighbourhoods.}
+    \end{subfigure}
+    \caption{Spatial coverage analysis of transit stop density by neighbourhood.}
+    \label{fig:coverage_spatial}
+\end{figure}
+
+% ------------------------------
+\subsection{Visualization \& Reporting (Stephenie)}
+
+Stephenie developed interactive and static visualizations for exploratory analysis and report inclusion. Interactive transit maps were built using Kepler.gl and Folium for dynamic exploration of stops, network edges and service patterns. Outputs include coverage bar charts, distribution plots and transfer point maps. Interactive maps were exported as self-contained HTML files.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{coverage_bar.png}
+        \caption{Top 20 neighbourhoods by stop count.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{transfer_points.png}
+        \caption{Transfer points scaled by routes served.}
+    \end{subfigure}
+    \caption{Coverage bar chart and transfer point connectivity.}
+    \label{fig:viz}
+\end{figure}
+
+% ------------------------------
+\subsection{Challenges and Mitigation}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+\textbf{Challenge} & \textbf{Resolution} \\
+\midrule
+GTFS times $>$24:00 collapse overnight trips & Parse to total seconds; preserve $>$24h values \\
+\texttt{area\_km2 = 0} breaks density analysis & Recompute via DuckDB \texttt{ST\_Area} with projected CRS \\
+Large paginated datasets (5.98M+ rows) & \texttt{ThreadPoolExecutor} for parallel batch downloads \\
+Jupyter module caching & Enabled \texttt{\%autoreload}; restructured imports through module namespace \\
+Schema changes breaking notebooks & Rebased visualization code; queries adjusted to finalized schema \\
+Transitland API limitations & Current feed is Winter 2025-2026 only; historical pre-PTN data requires upgraded API key (free for students, request submitted) \\
+Scheduling group meetings & Lettuce Meet polls with async Telegram coordination \\
+Spatial analysis complexity & Researched Folium, GeoPandas, DuckDB Spatial, contextily \\
+Limited Winnipeg transit research & Referenced analyses of other cities; adapted methodologies \\
+Missing ridership data & Winnipeg does not publish granular ridership data \\
+\bottomrule
+\end{tabularx}
+\caption{Challenges encountered and resolutions applied.}
+\label{tab:challenges}
+\end{table}
+
+\noindent\rule{\textwidth}{0.4pt}
+
+% ============================================================
+\section{Updated Plan and Timeline}
+
+The core pipeline and analysis modules were completed ahead of schedule. Remaining work focuses on deepening analysis, integrating census data and preparing the final report.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{@{}l l X X X X@{}}
+\toprule
+\textbf{Period} & \textbf{Milestone} & \textbf{Ahmed} & \textbf{Cathy} & \textbf{Stephenie} & \textbf{Sudipta} \\
+\midrule
+Jan 20 - Feb 7 & PR1 \checkmark & GTFS pipeline, frequency module, maps & Network module, graph stats & Visualizations, interactive maps & Coverage analysis, density stats \\
+\addlinespace
+Feb 10 - 23 & Post-PR1 & Validate freq vs PTN targets; census modal share & Centrality metrics; Louvain clustering & Refine maps; add basemaps & Validate coverage; census joins \\
+\addlinespace
+Feb 24 - Mar 9 & PR2 prep & Census integration; document pipeline & Finalize clustering; connectivity & Compile visuals; Streamlit MVP & Coverage completion; service gaps \\
+\addlinespace
+\textbf{March 10} & \textbf{PR2 due} & Submit & Submit & Submit & Submit \\
+\addlinespace
+Mar 11 - 30 & Extended & Lock pipeline; modal share & Expand network; robustness & Presentation visuals; dashboard & Census equity analysis \\
+\addlinespace
+Mar 31 - Apr 5 & Final & Technical review; methodology & Network results writeup & Edit, assemble, format & Coverage analysis section \\
+\addlinespace
+\textbf{April 6} & \textbf{Final due} & Submit & Submit & Submit & Submit \\
+\addlinespace
+Apr 7 - 9 & Presentation & Technical accuracy & Network slides & Design \& visuals & Coverage slides \\
+\bottomrule
+\end{tabularx}
+\caption{Updated project timeline with per-member task allocation.}
+\label{tab:timeline}
+\end{table}
+
+\textbf{Planned Next Steps for PR2:}
+\begin{itemize}
+    \item Compute centrality metrics (degree, betweenness) and Louvain community detection to identify transit corridors and service clusters (Cathy).
+    \item Integrate 2021 Census population and income data for equity analysis (Sudipta).
+    \item Load modal share data and incorporate census variables for socioeconomic analysis (Ahmed).
+    \item Build an interactive Streamlit dashboard consolidating all outputs (Stephenie).
+    \item Validate frequency metrics against PTN headway targets (Ahmed).
+\end{itemize}
+
+\noindent\rule{\textwidth}{0.4pt}
+
+% ============================================================
+\section{Acknowledgement}
+
+No assistance was received from the TA in preparing this report. We thank the City of Winnipeg Open Data Portal and Winnipeg Transit for providing publicly available datasets. We also acknowledge Transitland by Interline Technologies for GTFS feed data, historical archives and additional transit data resources used in our pipeline.
+
+\noindent\rule{\textwidth}{0.4pt}
+
+% ============================================================
+\section{Consent Declaration}
+
+We, the undersigned, have reviewed this document and consent to submit it as Progress Report 1 for our group project.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{l l l}
+\toprule
+\textbf{Member} & \textbf{Initials for Signature} & \textbf{Date} \\
+\midrule
+Ahmed Hasan & ASH & February 7th, 2026 \\
+Cathy Li & CL & February 7th, 2026 \\
+Stephenie Michael & SCM & February 7th, 2026 \\
+Sudipta Sarker & SS & February 7th, 2026 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\rule{\textwidth}{0.4pt}
+
+% ============================================================
+\appendix
+\section{References \& Datasets}
+
+\begin{itemize}[leftmargin=*]
+    \item Winnipeg Transit. ``GTFS Feed.'' \url{https://winnipegtransit.com/en/schedules-maps-tools/open-data/}
+    \item City of Winnipeg. ``Open Data Portal.'' \url{https://data.winnipeg.ca/}
+    \item Transitland by Interline Technologies. ``GTFS Feed Archives.'' \url{https://www.transit.land/}
+    \item MRCagney. ``gtfs-kit: A Python toolkit for GTFS feeds.'' \url{https://github.com/mrcagney/gtfs_kit}
+    \item UTEL-UIUC. ``gtfs-segments: Segment-level GTFS analysis.'' \url{https://github.com/UTEL-UIUC/gtfs_segments}
+    \item DuckDB Foundation. ``DuckDB: In-process SQL OLAP database.'' \url{https://duckdb.org}
+    \item T.\ Bao et al. ``PubtraVis: Public transit visualization.'' \textit{ISPRS Int.\ J.\ Geo-Inf.}, vol.\ 9, no.\ 4, 2020.
+    \item E.\ Farber et al. ``GTFS2STN: Spatiotemporal transit network analysis.'' \textit{arXiv:2405.02760}, 2024.
+    \item S.\ Chicken. ``Why Winnipeg doesn't know who's riding the bus.'' \textit{The Narwhal}, 2024.
+    \item Statistics Canada. ``Census Profile, 2021.'' \url{https://www12.statcan.gc.ca/census-recensement/2021/}
+    \item Hagberg, A., Schult, D.\ \& Swart, P. ``NetworkX.'' \url{https://networkx.org/}
+    \item Jordahl, K.\ et al. ``GeoPandas.'' \url{https://geopandas.org/}
+    \item Filipe. ``Folium.'' \url{https://python-visualization.github.io/folium/}
+\end{itemize}
+
+\end{document}

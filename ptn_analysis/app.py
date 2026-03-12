@@ -1,439 +1,313 @@
-"""Winnipeg PTN Dashboard - Interactive transit network visualization.
+"""Streamlit dashboard for the Winnipeg PTN analysis."""
 
-Uses Kepler.gl for high-performance map rendering with multiple layers.
-Requires MAPBOX_TOKEN environment variable for base maps.
+from __future__ import annotations
 
-Usage:
-    streamlit run ptn_analysis/app.py --server.port 8501
-    # Or: make dashboard
-"""
-
-from typing import Any
-
-from keplergl import KeplerGl
 import matplotlib.pyplot as plt
+import pandas as pd
+import pydeck as pdk
 import streamlit as st
-from streamlit_keplergl import keplergl_static
 
-from ptn_analysis.config import DUCKDB_PATH, MAPBOX_TOKEN, WPG_BOUNDS
-
-
-def ensure_database() -> bool:
-    """Initialize DuckDB if missing (first-run bootstrap).
-
-    Returns:
-        True if database is ready, False if initialization failed.
-    """
-    if DUCKDB_PATH.exists():
-        return True
-
-    st.info("Initializing database for first run...")
-    try:
-        from ptn_analysis.data.make_dataset import boundaries, graph, gtfs
-
-        with st.spinner("Building local DuckDB (first run may take a few minutes)..."):
-            gtfs()
-            boundaries()
-            graph()
-        return True
-    except Exception as e:
-        st.error(f"Database initialization failed: {e}")
-        return False
-
-
-def get_kepler_config(center_lat: float, center_lon: float, zoom: float = 11) -> dict[str, Any]:
-    """Generate Kepler.gl configuration for transit visualization.
-
-    Layers configured:
-    1. Neighbourhoods (Polygon) - Filled by coverage (stops/km2)
-    2. Network Edges (Line) - Thickness/Color by trip/route count
-    3. Transit Stops (Point) - Radius by route_count
-
-    Args:
-        center_lat: Map center latitude.
-        center_lon: Map center longitude.
-        zoom: Initial zoom level.
-
-    Returns:
-        Kepler.gl configuration dictionary.
-    """
-    return {
-        "version": "v1",
-        "config": {
-            "mapState": {
-                "latitude": center_lat,
-                "longitude": center_lon,
-                "zoom": zoom,
-                "pitch": 0,
-                "bearing": 0,
-            },
-            "mapStyle": {
-                "styleType": "dark",
-                "topLayerGroups": {},
-                "visibleLayerGroups": {
-                    "label": True,
-                    "road": True,
-                    "border": False,
-                    "building": True,
-                    "water": True,
-                    "land": True,
-                    "3d building": False,
-                },
-            },
-            "visState": {
-                "filters": [],
-                "layers": [
-                    {
-                        "id": "neighbourhoods",
-                        "type": "geojson",
-                        "config": {
-                            "dataId": "Neighbourhoods",
-                            "label": "Neighbourhood Coverage",
-                            "color": [23, 184, 190],
-                            "highlightColor": [252, 242, 26, 255],
-                            "columns": {"geojson": "geometry"},
-                            "isVisible": True,
-                            "visConfig": {
-                                "opacity": 0.4,
-                                "strokeOpacity": 0.8,
-                                "thickness": 0.5,
-                                "strokeColor": [221, 178, 124],
-                                "colorRange": {
-                                    "name": "Global Warming",
-                                    "type": "sequential",
-                                    "category": "Uber",
-                                    "colors": [
-                                        "#5A1846",
-                                        "#900C3F",
-                                        "#C70039",
-                                        "#E3611C",
-                                        "#F1920E",
-                                        "#FFC300",
-                                    ],
-                                },
-                                "filled": True,
-                                "stroked": True,
-                                "enable3d": False,
-                                "wireframe": False,
-                            },
-                            "textLabel": [
-                                {
-                                    "field": {"name": "neighbourhood", "type": "string"},
-                                    "color": [255, 255, 255],
-                                    "size": 18,
-                                    "offset": [0, 0],
-                                    "anchor": "middle",
-                                    "alignment": "center",
-                                }
-                            ],
-                        },
-                        "visualChannels": {
-                            "colorField": {"name": "stops_per_km2", "type": "real"},
-                            "colorScale": "quantile",
-                            "strokeColorField": None,
-                            "strokeColorScale": "quantile",
-                            "sizeField": None,
-                            "sizeScale": "linear",
-                        },
-                    },
-                    {
-                        "id": "edges",
-                        "type": "line",
-                        "config": {
-                            "dataId": "Network Edges",
-                            "label": "Transit Network",
-                            "color": [77, 193, 156],
-                            "columns": {
-                                "lat0": "from_lat",
-                                "lng0": "from_lon",
-                                "lat1": "to_lat",
-                                "lng1": "to_lon",
-                            },
-                            "isVisible": True,
-                            "visConfig": {
-                                "opacity": 0.4,
-                                "thickness": 1.0,
-                                "colorRange": {
-                                    "name": "Global Warming",
-                                    "type": "sequential",
-                                    "category": "Uber",
-                                    "colors": [
-                                        "#5A1846",
-                                        "#900C3F",
-                                        "#C70039",
-                                        "#E3611C",
-                                        "#F1920E",
-                                        "#FFC300",
-                                    ],
-                                },
-                                "sizeRange": [0, 10],
-                                "targetColor": None,
-                            },
-                        },
-                        "visualChannels": {
-                            "colorField": {"name": "trip_count", "type": "integer"},
-                            "colorScale": "quantize",
-                            "sizeField": {"name": "route_count", "type": "integer"},
-                            "sizeScale": "linear",
-                        },
-                    },
-                    {
-                        "id": "stops",
-                        "type": "point",
-                        "config": {
-                            "dataId": "Transit Stops",
-                            "label": "Stops",
-                            "color": [255, 255, 255],
-                            "columns": {
-                                "lat": "stop_lat",
-                                "lng": "stop_lon",
-                                "altitude": None,
-                            },
-                            "isVisible": True,
-                            "visConfig": {
-                                "radius": 5,
-                                "fixedRadius": False,
-                                "opacity": 0.8,
-                                "outline": False,
-                                "thickness": 2,
-                                "strokeColor": None,
-                                "colorRange": {
-                                    "name": "ColorBrewer YlGnBu-6",
-                                    "type": "sequential",
-                                    "category": "ColorBrewer",
-                                    "colors": [
-                                        "#ffffcc",
-                                        "#c7e9b4",
-                                        "#7fcdbb",
-                                        "#41b6c4",
-                                        "#2c7fb8",
-                                        "#253494",
-                                    ],
-                                },
-                                "radiusRange": [2, 20],
-                                "filled": True,
-                            },
-                        },
-                        "visualChannels": {
-                            "colorField": {"name": "route_count", "type": "integer"},
-                            "colorScale": "quantile",
-                            "strokeColorField": None,
-                            "strokeColorScale": "quantile",
-                            "sizeField": {"name": "route_count", "type": "integer"},
-                            "sizeScale": "linear",
-                        },
-                    },
-                ],
-                "interactionConfig": {
-                    "tooltip": {
-                        "fieldsToShow": {
-                            "Neighbourhoods": [
-                                {"name": "neighbourhood", "format": None},
-                                {"name": "stops_per_km2", "format": None},
-                                {"name": "stop_count", "format": None},
-                            ],
-                            "Network Edges": [
-                                {"name": "trip_count", "format": None},
-                                {"name": "route_count", "format": None},
-                            ],
-                            "Transit Stops": [
-                                {"name": "stop_name", "format": None},
-                                {"name": "route_count", "format": None},
-                            ],
-                        },
-                        "compareMode": False,
-                        "compareType": "absolute",
-                        "enabled": True,
-                    },
-                    "brush": {"size": 0.5, "enabled": False},
-                    "geocoder": {"enabled": False},
-                    "coordinate": {"enabled": False},
-                },
-                "layerBlending": "normal",
-                "splitMaps": [],
-                "animationConfig": {"currentTime": None, "speed": 1},
-            },
-        },
-    }
-
-
-# Bootstrap database on first run
-if not ensure_database():
-    st.stop()
-
-st.set_page_config(
-    page_title="Winnipeg PTN Dashboard",
-    page_icon="🚌",
-    layout="wide",
+from ptn_analysis.analysis.visualization import (
+    PTN_TIER_COLORS,
+    PTN_TIER_ORDER,
+    create_employment_access_change_chart,
 )
+from ptn_analysis.context.reporting import collect_summary_stats
+from ptn_analysis.context.config import DEFAULT_CITY_KEY, FEED_ID_CURRENT, SERVING_DUCKDB_PATH, WPG_BOUNDS
+from ptn_analysis.context.db import TransitDB
+from ptn_analysis.context.serving import Dashboard, MapDataLoader
 
-st.title("🚌 Winnipeg Primary Transit Network")
-st.markdown("**COMP 4710 Group 11** - Network Analysis Dashboard")
-
-if not MAPBOX_TOKEN:
-    st.error("MAPBOX_TOKEN is required. Set it in your `.env` file.")
-    st.stop()
+# ---------------------------------------------------------------------------
+# Cached DB access — @st.cache_resource prevents re-opening the DB engine on
+# every Streamlit rerun (which includes every user interaction).
+# ---------------------------------------------------------------------------
 
 
-def _load_analysis_functions():
-    """Import analysis callables lazily.
+@st.cache_resource
+def _get_db() -> Dashboard:
+    return Dashboard(TransitDB(SERVING_DUCKDB_PATH))
 
-    Returns:
-        Tuple of analysis function callables used by the dashboard.
-    """
-    from ptn_analysis.analysis import (
-        get_edges_with_routes,
-        get_neighbourhood_coverage,
-        get_neighbourhood_geodata,
-        get_stops_with_coords,
+
+@st.cache_resource
+def _get_map_loader() -> MapDataLoader:
+    return MapDataLoader(DEFAULT_CITY_KEY, FEED_ID_CURRENT, TransitDB(SERVING_DUCKDB_PATH))
+
+
+@st.cache_data(show_spinner=False)
+def _get_missing() -> list[str]:
+    return _get_db().missing_relations()
+
+
+@st.cache_data(show_spinner=False)
+def _load_payload() -> dict:
+    return _get_db().load_all(
+        map_loader=_get_map_loader(),
+        summary_stats_fn=collect_summary_stats,
     )
 
-    return (
-        get_stops_with_coords,
-        get_edges_with_routes,
-        get_neighbourhood_coverage,
-        get_neighbourhood_geodata,
+
+# ---------------------------------------------------------------------------
+# Streamlit render helpers (pure UI, no DB access)
+# ---------------------------------------------------------------------------
+
+
+def _render_pydeck_map(stops_df: pd.DataFrame, connections_df: pd.DataFrame) -> None:
+    """Render stop network using PyDeck."""
+    stop_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=stops_df[["stop_lon", "stop_lat", "stop_name"]].dropna(),
+        get_position=["stop_lon", "stop_lat"],
+        get_radius=80,
+        get_fill_color=[0, 100, 200, 180],
+        pickable=True,
     )
-
-
-def _coverage_category(stops_per_km2: float) -> str:
-    """Map stop density to categorical coverage label.
-
-    Args:
-        stops_per_km2: Stop density value.
-
-    Returns:
-        Coverage category (High/Medium/Low).
-    """
-    if stops_per_km2 >= 5:
-        return "High"
-    if stops_per_km2 >= 1:
-        return "Medium"
-    return "Low"
-
-
-@st.cache_data
-def load_data():
-    """Load and cache all visualization data."""
-    (
-        get_stops_with_coords,
-        get_edges_with_routes,
-        get_neighbourhood_coverage,
-        get_neighbourhood_geodata,
-    ) = _load_analysis_functions()
-    stops = get_stops_with_coords()
-    edges = get_edges_with_routes()
-    coverage = get_neighbourhood_coverage()
-    coverage_gdf = get_neighbourhood_geodata()
-
-    coverage["coverage_category"] = coverage["stops_per_km2"].apply(_coverage_category)
-
-    return stops, edges, coverage, coverage_gdf
-
-
-try:
-    stops, edges, coverage, coverage_gdf = load_data()
-    data_loaded = True
-except Exception as e:
-    st.error(f"Error loading data: {e}")
-    st.info("Run `make data` to load data into local DuckDB.")
-    data_loaded = False
-
-if data_loaded:
-    st.sidebar.header("Network Statistics")
-    st.sidebar.metric("Transit Stops", f"{len(stops):,}")
-    st.sidebar.metric("Network Edges", f"{len(edges):,}")
-    st.sidebar.metric("Neighbourhoods", f"{len(coverage):,}")
-
-    st.sidebar.subheader("Coverage Distribution")
-    for cat in ["High", "Medium", "Low"]:
-        count = len(coverage[coverage["coverage_category"] == cat])
-        st.sidebar.write(f"{cat}: {count} neighbourhoods")
-
-    tab1, tab2, tab3 = st.tabs(["🗺️ Map", "📊 Coverage", "📈 Network"])
-
-    with tab1:
-        st.subheader("Transit Network Map")
-
-        config = get_kepler_config(
-            center_lat=WPG_BOUNDS["center_lat"],
-            center_lon=WPG_BOUNDS["center_lon"],
+    layers = [stop_layer]
+    if not connections_df.empty and all(
+        c in connections_df.columns
+        for c in ["from_lon", "from_lat", "to_lon", "to_lat"]
+    ):
+        arc_layer = pdk.Layer(
+            "ArcLayer",
+            data=connections_df.dropna(),
+            get_source_position=["from_lon", "from_lat"],
+            get_target_position=["to_lon", "to_lat"],
+            get_width=1,
+            get_source_color=[200, 30, 0, 100],
+            get_target_color=[0, 30, 200, 100],
         )
+        layers.append(arc_layer)
+    view_state = pdk.ViewState(
+        latitude=WPG_BOUNDS["center_lat"],
+        longitude=WPG_BOUNDS["center_lon"],
+        zoom=11,
+        pitch=0,
+    )
+    deck = pdk.Deck(
+        layers=layers,
+        initial_view_state=view_state,
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        tooltip={"text": "{stop_name}"},
+    )
+    st.pydeck_chart(deck)
 
-        kepler_map = KeplerGl(height=600, config=config)
 
-        if coverage_gdf is not None and not coverage_gdf.empty:
-            kepler_map.add_data(data=coverage_gdf, name="Neighbourhoods")
+def render_density_chart(coverage: pd.DataFrame) -> None:
+    if coverage.empty:
+        st.warning("No neighbourhood density data is available.")
+        return
+    top = coverage.nlargest(20, "stop_count").sort_values("stop_count")
+    color_map = {"High": "#1a9850", "Medium": "#fee08b", "Low": "#d73027"}
+    colors = [color_map.get(c, "#6B7280") for c in top["coverage_category"]]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.barh(top["neighbourhood"], top["stop_count"], color=colors)
+    ax.set_title("Top 20 Neighbourhoods by Stop Count")
+    ax.set_xlabel("Stop count")
+    ax.grid(axis="x", linestyle="--", alpha=0.35)
+    ax.set_axisbelow(True)
+    st.pyplot(fig)
+    plt.close(fig)
 
-        kepler_map.add_data(data=edges, name="Network Edges")
 
-        required_columns = ["stop_id", "stop_name", "stop_lat", "stop_lon", "route_count"]
-        missing_columns = [column for column in required_columns if column not in stops.columns]
-        if missing_columns:
-            st.error(f"Missing expected stop columns: {missing_columns}")
-            st.stop()
-        stops_for_kepler = stops[required_columns].copy()
-        kepler_map.add_data(data=stops_for_kepler, name="Transit Stops")
+def render_ptn_summary_chart(ptn_summary: pd.DataFrame) -> None:
+    if ptn_summary.empty:
+        st.warning("PTN summary data is not available.")
+        return
+    tbl = ptn_summary.copy()
+    tbl["ptn_tier"] = pd.Categorical(tbl["ptn_tier"], categories=PTN_TIER_ORDER, ordered=True)
+    tbl = tbl.sort_values("ptn_tier")
+    colors = [PTN_TIER_COLORS.get(t, "#6B7280") for t in tbl["ptn_tier"]]
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(tbl["ptn_tier"], tbl["avg_headway_minutes"], color=colors)
+    ax.set_title("Average Scheduled Headway by PTN Tier")
+    ax.set_ylabel("Average headway (minutes)")
+    ax.tick_params(axis="x", rotation=45)
+    st.pyplot(fig)
+    plt.close(fig)
 
-        keplergl_static(kepler_map, center_map=True)
 
-    with tab2:
-        st.subheader("Neighbourhood Coverage")
+def render_live_status(service_status: pd.DataFrame, advisories: pd.DataFrame) -> None:
+    if service_status.empty:
+        st.info("No cached Winnipeg Transit API status is available yet.")
+    else:
+        row = service_status.iloc[0]
+        status = row.get("status") or row.get("status_key") or row.get("key") or "unknown"
+        st.metric("Current service status", str(status))
+        st.caption(f"Last refreshed: {row.get('query_time', 'unknown')}")
+        if row.get("status_message"):
+            st.caption(str(row.get("status_message")))
+        if str(status).lower() in {"esp-1", "esp-2", "esp-3"}:
+            st.error("Emergency service plan is active. Live arrival and trip-planning outputs may be unreliable.")
 
-        col1, col2 = st.columns(2)
+    st.markdown("**Current Service Advisories**")
+    if advisories.empty:
+        st.info("No cached service advisories are available.")
+        return
+    cols = [c for c in ["priority", "title", "category", "updated_at"] if c in advisories.columns]
+    st.dataframe(advisories[cols], width="stretch")
 
-        with col1:
-            st.markdown("**Top 15 by Stop Count**")
-            top_coverage = coverage.nlargest(15, "stop_count")[
-                ["neighbourhood", "stop_count", "stops_per_km2", "coverage_category"]
-            ]
-            st.dataframe(top_coverage, use_container_width=True)
 
-        with col2:
-            st.markdown("**Coverage Statistics**")
-            st.metric("Total Stops", f"{coverage['stop_count'].sum():,}")
-            st.metric("Mean Stops/Neighbourhood", f"{coverage['stop_count'].mean():.1f}")
-            st.metric("Median Stops/Neighbourhood", f"{coverage['stop_count'].median():.1f}")
-            st.metric("Zero-Stop Areas", f"{(coverage['stop_count'] == 0).sum()}")
+def render_jobs_access_chart(jobs_access_comparison: pd.DataFrame) -> None:
+    if jobs_access_comparison.empty:
+        st.info("Jobs-access comparison data is not available yet.")
+        return
+    fig = create_employment_access_change_chart(jobs_access_comparison, top_n=15)
+    if fig is None:
+        st.info("Jobs-access comparison data is not available yet.")
+        return
+    st.pyplot(fig)
+    plt.close(fig)
 
-        st.markdown("**Stop Count Distribution**")
-        fig, ax = plt.subplots(figsize=(10, 6))
-        top20 = coverage.nlargest(20, "stop_count")
-        colors = {"High": "green", "Medium": "orange", "Low": "red"}
-        bar_colors = [colors.get(c, "gray") for c in top20["coverage_category"]]
-        ax.barh(top20["neighbourhood"], top20["stop_count"], color=bar_colors)
-        ax.set_xlabel("Number of Stops")
-        ax.invert_yaxis()
-        st.pyplot(fig)
 
-    with tab3:
-        st.subheader("Network Statistics")
+def render_live_validation(trip_delay_summary: pd.DataFrame, stop_features: pd.DataFrame) -> None:
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Current trip delay summary**")
+        if trip_delay_summary.empty:
+            st.info("No cached trip-delay snapshots are available yet.")
+        else:
+            delay_cols = [c for c in ["trip_key", "bus_key", "variant_key",
+                "mean_arrival_delay_seconds", "max_arrival_delay_seconds", "cancelled_stop_count"]
+                if c in trip_delay_summary.columns]
+            st.dataframe(trip_delay_summary[delay_cols].head(20), width="stretch")
+    with right:
+        st.markdown("**Selected stop features**")
+        if stop_features.empty:
+            st.info("No cached stop-feature enrichment is available yet.")
+        else:
+            st.dataframe(stop_features.head(20), width="stretch")
 
-        col1, col2 = st.columns(2)
 
-        with col1:
-            st.markdown("**Edge Statistics**")
-            st.metric("Total Edges", f"{len(edges):,}")
-            st.metric("Avg Trips per Edge", f"{edges['trip_count'].mean():.1f}")
-            st.metric("Max Trips on Edge", f"{edges['trip_count'].max():,}")
+# ---------------------------------------------------------------------------
+# Streamlit entry point
+# ---------------------------------------------------------------------------
 
-        with col2:
-            st.markdown("**Top Connections**")
-            top_edges = edges.nlargest(10, "trip_count")[
-                ["from_stop_id", "to_stop_id", "trip_count", "route_count"]
-            ]
-            st.dataframe(top_edges, use_container_width=True)
 
-        st.markdown("**Trip Count Distribution**")
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.hist(edges["trip_count"], bins=50, edgecolor="black")
-        ax.set_xlabel("Trips per Edge")
-        ax.set_ylabel("Count")
-        ax.set_yscale("log")
-        st.pyplot(fig)
+def main() -> None:
+    st.set_page_config(page_title="Winnipeg PTN Dashboard", page_icon="🚌", layout="wide")
+    st.title("Winnipeg Primary Transit Network")
+    st.caption("COMP 4710 Group 11 · PR2 dashboard")
 
-st.markdown("---")
-st.markdown(
-    "Data sources: [Winnipeg Transit GTFS](https://gtfs.winnipegtransit.com/) | "
-    "[Winnipeg Open Data](https://data.winnipeg.ca/)"
-)
+    try:
+        missing = _get_missing()
+    except Exception as exc:
+        st.error("The dashboard could not open the DuckDB database.")
+        st.code(str(exc))
+        st.stop()
+
+    if missing:
+        st.error("The dashboard database is incomplete. Run `make data` before opening the app.")
+        st.code("\n".join(missing))
+        st.stop()
+
+    try:
+        payload = _load_payload()
+    except Exception as exc:
+        st.error("The dashboard payload could not be loaded.")
+        st.code(str(exc))
+        st.stop()
+
+    stats = payload["summary_stats"]
+    sb = st.sidebar
+    sb.header("Summary")
+    sb.metric("Stops", f"{stats['num_stops']:,}")
+    sb.metric("Connections", f"{stats['num_edges']:,}")
+    sb.metric("Routes", f"{stats['route_count']:,}")
+    sb.metric("Neighbourhoods", f"{stats['neighbourhood_count']:,}")
+    sb.metric("Jobs access neighbourhoods", f"{stats['jobs_access_neighbourhood_count']:,}")
+
+    overview_tab, map_tab, coverage_tab, network_tab, frequency_tab, live_tab = st.tabs(
+        ["Overview", "Map", "Coverage", "Network", "Frequency", "Live"]
+    )
+
+    with overview_tab:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total neighbourhood stops", f"{stats['total_neighbourhood_stops']:,}")
+        c2.metric("Median stop density", f"{stats['median_stop_density_per_km2']:.2f}")
+        c3.metric("Max stop density", f"{stats['max_stop_density_per_km2']:.2f}")
+        c4.metric("Mean jobs access score", f"{stats['mean_jobs_access_score']:.2f}")
+
+        st.markdown("**Route schedule comparison**")
+        rc = payload["route_comparison"]
+        if rc.empty:
+            st.info("Pre/post comparison data is not available yet. Load the pre-PTN feed first.")
+        else:
+            wanted = ["baseline_route_short_name", "comparison_route_short_name", "ptn_tier",
+                      "headway_pre", "headway_post", "headway_improvement",
+                      "speed_pre", "speed_post", "speed_improvement", "trip_count_change"]
+            st.dataframe(rc[[c for c in wanted if c in rc.columns]], width="stretch")
+
+    with map_tab:
+        st.subheader("Interactive network map")
+        _render_pydeck_map(payload["stops"], payload["connections"])
+
+    with coverage_tab:
+        st.subheader("Neighbourhood stop density and jobs access")
+        st.caption(
+            "Jobs access is a destination-side proxy derived from CBP establishment counts "
+            "and size bands, not an exact employment count."
+        )
+        left, right = st.columns([3, 2])
+        with left:
+            render_density_chart(payload["coverage"])
+        with right:
+            st.markdown("**Underserved neighbourhoods**")
+            u = payload["underserved"]
+            if u.empty:
+                st.info("No underserved-neighbourhood table is available.")
+            else:
+                st.dataframe(u[["neighbourhood", "stop_count", "stop_density_per_km2"]], width="stretch")
+
+        st.markdown("**Jobs access comparison**")
+        render_jobs_access_chart(payload["jobs_access_comparison"])
+
+        st.markdown("**Current jobs access leaders**")
+        ja = payload["jobs_access"]
+        if ja.empty:
+            st.info("Current jobs-access metrics are not available yet.")
+        else:
+            st.dataframe(ja.sort_values("jobs_access_score", ascending=False).head(15), width="stretch")
+
+        st.markdown("**Priority matrix**")
+        pm = payload["priority_matrix"]
+        if pm.empty:
+            st.info("Priority matrix data is not available yet.")
+        else:
+            sort_col = "priority_score" if "priority_score" in pm.columns else "priority_rank"
+            pm_cols = [c for c in ["neighbourhood", "jobs_access_score", "walkability_score",
+                "bikeability_score", "median_household_income_2020",
+                "commute_public_transit", "priority_score"] if c in pm.columns]
+            st.dataframe(pm.sort_values(sort_col, ascending=False).head(20)[pm_cols], width="stretch")
+
+    with network_tab:
+        st.subheader("Network metrics")
+        left, right = st.columns(2)
+        with left:
+            nm = payload["network_metrics"]
+            st.dataframe(nm, width="stretch") if not nm.empty else st.info("Network metrics are not available.")
+        with right:
+            st.markdown("**Top hubs**")
+            th = payload["top_hubs"]
+            st.dataframe(th, width="stretch") if not th.empty else st.info("Top hub data is not available.")
+
+    with frequency_tab:
+        st.subheader("Scheduled service by PTN tier")
+        rf = payload["route_frequency"]
+        if rf.empty:
+            st.warning("Route schedule metrics are not available.")
+        else:
+            hw = rf["mean_headway_minutes"]
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Routes", len(rf))
+            c2.metric("Trips", f"{int(rf['scheduled_trip_count'].sum()):,}")
+            c3.metric("Mean headway", f"{hw.mean():.1f} min")
+            c4.metric("Routes under 15 min", int(hw.lt(15).sum()))
+            render_ptn_summary_chart(payload["ptn_summary"])
+
+    with live_tab:
+        st.subheader("Winnipeg Transit API v4")
+        render_live_status(payload["service_status"], payload["service_advisories"])
+        render_live_validation(payload["trip_delay_summary"], payload["stop_features"])
+
+
+if __name__ == "__main__":
+    main()

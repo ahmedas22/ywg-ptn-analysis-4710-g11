@@ -1,48 +1,76 @@
-# Data - ignore raw/interim, keep processed DuckDB
-/data/raw/
-/data/interim/
-/data/external/
 
-# OS
-.DS_Store
-
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-*.egg
-dist/
-build/
-.eggs/
-
-# Virtual environments
-.env
-.venv
-venv/
-
-# Testing
 .coverage
-.pytest_cache/
-htmlcov/
-
-# Jupyter
-.ipynb_checkpoints
-
-# IDE
+.DS_Store
+.eggs/
+.env
 .idea/
-.vscode/
-
-# Tools
-.ruff_cache/
+.ipynb_checkpoints
 .mypy_cache/
-
-# MkDocs
+.playwright-mcp/
+.pytest_cache/
+.ruff_cache/
+.venv
+.vscode/
+*.egg
+*.egg-info/
+*.executed.ipynb
+*.py[cod]
+*.so
+*$py.class
+/data/cache/
+/data/interim/*
+!/data/interim/wpg_transit.duckdb
+/data/pipeline.log
+/data/processed/*
+!/data/processed/wpg_transit_serving.duckdb
+/data/raw/**/*.geojson
+/data/raw/**/*.osm.pbf
+/data/raw/**/*.part
+/data/raw/**/*.zip
+/data/raw/api_cache/
+/data/raw/employment/
+/data/raw/gtfs_archive/
+/data/raw/open_data/
+/data/raw/open_data/**/count_*.json
+/data/raw/open_data/**/pages/
 /site
+# Data - ignore local runtime and cache artifacts
+# data/exports/ — tracked via LFS
+# IDE
+# Jupyter
+# LaTeX build artifacts and compiled planning docs (only submitted reports are tracked)
+# local databases (DuckDBs tracked via LFS)
+# MkDocs
+# Models — artifacts rebuilt from notebooks, not committed
+# OS
+# Playwright MCP
+# Python
+# Raw data downloads that may reappear
+# reports/*/figures/ — tracked via LFS (reproducible PDFs)
+# Testing
+# Tools
+# Virtual environments
+# StatCan POW files too large for GitHub LFS (>2GB each) — strip to Winnipeg for final report
+data/external/census_pow_98100491.csv
+data/external/census_pow_98100492.csv
+AGENTS.md
+build/
+dist/
 docs/site/
-
-# local databases
-data/processed/*.duckdb
+htmlcov/
+models/experiments/
+models/production/*.joblib
+models/production/*.pkl
 notebooks/data/processed/*.duckdb
-data/processed/*.duckdb
+pal_generated.code
+reports/**/.texpadtmp/
+reports/**/*.aux
+reports/**/*.fdb_latexmk
+reports/**/*.fls
+reports/**/*.log
+reports/**/*.out
+reports/**/*.synctex.gz
+reports/*/tables/**
+reports/pr2/PR2_TEAM_PLAN.pdf
+venv/

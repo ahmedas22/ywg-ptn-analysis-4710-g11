@@ -14,27 +14,45 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Java (r5py requires JDK 21+)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install UV
         uses: astral-sh/setup-uv@v3
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra dashboard --extra reports --extra notebooks --group dev
+
+      - name: Check dependency health
+        run: uv run pip check
 
       - name: Run linter
-        run: uv run ruff check ptn_analysis/
+        run: uv run ruff check ptn_analysis
 
       - name: Check formatting
-        run: uv run ruff format --check ptn_analysis/
+        run: uv run ruff format --check ptn_analysis
+
+      - name: Compile package
+        run: uv run python -m compileall ptn_analysis
+
+      - name: Import shared runtime surfaces
+        run: |
+          uv run python -c "from ptn_analysis.reporting import REPORT_NOTEBOOKS; print('reporting ok')"
+          uv run python -c "from ptn_analysis.reporting import generate_figures; print('report execution ok')"
+          uv run python -c "from ptn_analysis.context.serving import Dashboard; print('app ok')"
 
       - name: Run tests
         run: |
           if [ -d tests ]; then
-            uv run pytest tests/ -v --tb=short
+            uv run pytest tests/ -v --tb=short -m "not integration"
           else
-            echo "No tests/ directory found; skipping pytest."
+            echo "No tests directory found; skipping pytest."
           fi

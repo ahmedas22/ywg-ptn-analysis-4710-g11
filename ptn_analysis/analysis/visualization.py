@@ -1,469 +1,187 @@
-"""Visualization module for Stephenie.
+"""Chart helpers and PTN presentation utilities.
 
-Provides data loaders for Kepler.gl maps (dashboard) and Folium maps (notebooks).
+Pure DataFrame/GeoDataFrame → Figure transforms. No DB access.
+PTN domain constants live in context.config; DB-bound report helpers
+live in context.reporting.
 """
 
-from typing import Any
+from __future__ import annotations
 
-from duckdb import DuckDBPyConnection
-import folium
-import geopandas as gpd
-from loguru import logger
-import pandas as pd
 from pathlib import Path
+
 import matplotlib.pyplot as plt
+import pandas as pd
 
-from ptn_analysis.analysis.coverage import get_stops_per_neighbourhood
-from ptn_analysis.config import DATASETS, WPG_BOUNDS, WPG_OPEN_DATA_URL
-from ptn_analysis.data.db import query_df
+from ptn_analysis.context.config import (
+    FX_ROUTE_COLORS,
+    HEADWAY_TIER_COLORS,
+    HEADWAY_TIER_LIST,
+    PTN_HEADWAY_TARGETS,
+    PTN_TIER_COLORS,
+    PTN_TIER_ORDER,
+    WEB_MERCATOR_CRS,
+    classify_ptn_tier,
+    get_route_display_color,
+    headway_tier,
+)
 
+__all__ = [
+    # re-exports from config (used by analysis.__init__)
+    "HEADWAY_TIER_COLORS",
+    "HEADWAY_TIER_LIST",
+    "PTN_TIER_COLORS",
+    "PTN_TIER_ORDER",
+    "PTN_HEADWAY_TARGETS",
+    "FX_ROUTE_COLORS",
+    "classify_ptn_tier",
+    "get_route_display_color",
+    "headway_tier",
+    # map helpers
+    "WEB_MERCATOR",
+    "add_consistent_basemap",
+    # chart rendering
+    "Plotter",
+    "save_report_figure",
+    "create_employment_access_change_chart",
+    "plot_metric_comparison_bar",
+    "plot_heatmap",
+    "plot_choropleth_change",
+]
 
-def get_kepler_config(
-    center_lat: float | None = None,
-    center_lon: float | None = None,
-    zoom: float = 11,
-) -> dict[str, Any]:
-    """Generate Kepler.gl configuration centered on Winnipeg.
-
-    Used by app.py dashboard.
-
-    Args:
-        center_lat: Map center latitude. Defaults to Winnipeg center.
-        center_lon: Map center longitude. Defaults to Winnipeg center.
-        zoom: Initial zoom level.
-
-    Returns:
-        Kepler.gl configuration dictionary.
-    """
-    if center_lat is None:
-        center_lat = WPG_BOUNDS["center_lat"]
-    if center_lon is None:
-        center_lon = WPG_BOUNDS["center_lon"]
-
-    return {
-        "version": "v1",
-        "config": {
-            "mapState": {
-                "latitude": center_lat,
-                "longitude": center_lon,
-                "zoom": zoom,
-                "pitch": 0,
-                "bearing": 0,
-            },
-            "mapStyle": {"styleType": "light"},
-            "visState": {
-                "layers": [
-                    {
-                        "id": "stops_layer",
-                        "type": "point",
-                        "config": {
-                            "dataId": "stops",
-                            "label": "Stops",
-                            "columns": {"lat": "stop_lat", "lng": "stop_lon"},
-                            "isVisible": True,
-                            "visConfig": {"radius": 4, "opacity": 0.7},
-                        },
-                    },
-                    {
-                        "id": "edges_layer",
-                        "type": "line",
-                        "config": {
-                            "dataId": "edges",
-                            "label": "Edges",
-                            "columns": {
-                                "lat0": "from_lat",
-                                "lng0": "from_lon",
-                                "lat1": "to_lat",
-                                "lng1": "to_lon",
-                            },
-                            "isVisible": True,
-                            "visConfig": {"thickness": 2, "opacity": 0.4},
-                        },
-                    },
-                ]
-            },
-        },
-    }
+WEB_MERCATOR = WEB_MERCATOR_CRS
 
 
-def get_folium_map(
-    center_lat: float | None = None,
-    center_lon: float | None = None,
-    zoom: int = 12,
-    tiles: str = "CartoDB positron",
-) -> folium.Map:
-    """Create a Folium map centered on Winnipeg.
+# ---------------------------------------------------------------------------
+# Basemap helper (matplotlib + contextily — no folium)
+# ---------------------------------------------------------------------------
 
-    Used by Jupyter notebooks for open-source basemaps.
+
+def add_consistent_basemap(ax, zoom: int = 11) -> None:
+    """Apply the standard basemap style for matplotlib map figures.
 
     Args:
-        center_lat: Map center latitude. Defaults to Winnipeg center.
-        center_lon: Map center longitude. Defaults to Winnipeg center.
-        zoom: Initial zoom level.
-        tiles: Tile provider (CartoDB positron, OpenStreetMap, etc).
-
-    Returns:
-        Folium Map object.
+        ax: Matplotlib axes to add the basemap to.
+        zoom: Zoom level for the contextily tile download.
     """
-    if center_lat is None:
-        center_lat = WPG_BOUNDS["center_lat"]
-    if center_lon is None:
-        center_lon = WPG_BOUNDS["center_lon"]
+    import contextily as cx
 
-    return folium.Map(location=[center_lat, center_lon], zoom_start=zoom, tiles=tiles)
+    cx.add_basemap(ax, source=cx.providers.CartoDB.Positron, zoom=zoom)
+    ax.set_axis_off()
 
 
-def get_neighbourhood_coverage(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
-    """Load neighbourhood coverage metrics.
-
-    Args:
-        con: Optional DuckDB connection.
-
-    Returns:
-        DataFrame with neighbourhood, area_km2, stop_count, stops_per_km2.
-    """
-    return get_stops_per_neighbourhood(con)
+# ---------------------------------------------------------------------------
+# Chart helpers (pure DataFrame → Figure)
+# ---------------------------------------------------------------------------
 
 
-def get_stops_with_coords(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
-    """Load stops with coordinates and route counts.
-
-    Args:
-        con: Optional DuckDB connection.
-
-    Returns:
-        DataFrame with stop_id, stop_name, stop_lat, stop_lon, route_count.
-    """
-    return query_df(
-        """
-        SELECT s.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
-               COALESCE(e.route_count, 0) AS route_count
-        FROM stops s
-        LEFT JOIN (
-            SELECT from_stop_id, SUM(route_count) AS route_count
-            FROM stop_connections_weighted
-            GROUP BY from_stop_id
-        ) e ON s.stop_id = e.from_stop_id
-        """,
-        con,
+def save_report_figure(fig, output_path: str | Path, dpi: int = 200) -> Path:
+    """Save a chart or panel with consistent report export settings."""
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(
+        output_file,
+        dpi=dpi,
+        bbox_inches="tight",
+        pad_inches=0.04,
+        facecolor="white",
     )
+    return output_file
 
 
-def get_edges_with_routes(con: DuckDBPyConnection | None = None) -> pd.DataFrame:
-    """Load edges with stop coordinates for line visualization.
+def create_employment_access_change_chart(
+    jobs_access_comparison_table: pd.DataFrame,
+    top_n: int = 15,
+):
+    """Create a neighbourhood jobs-access change chart."""
+    if jobs_access_comparison_table.empty:
+        return None
 
-    Args:
-        con: Optional DuckDB connection.
+    display_table = jobs_access_comparison_table.sort_values(
+        "jobs_access_change", ascending=False,
+    ).head(top_n)
+    display_table = display_table.sort_values("jobs_access_change")
 
-    Returns:
-        DataFrame with from/to stop IDs, lat/lon, trip_count, route_count.
-    """
-    return query_df(
-        """
-        SELECT
-            e.from_stop_id,
-            e.to_stop_id,
-            s1.stop_lat AS from_lat,
-            s1.stop_lon AS from_lon,
-            s2.stop_lat AS to_lat,
-            s2.stop_lon AS to_lon,
-            e.trip_count,
-            e.route_count
-        FROM stop_connections_weighted e
-        JOIN stops s1 ON e.from_stop_id = s1.stop_id
-        JOIN stops s2 ON e.to_stop_id = s2.stop_id
-        """,
-        con,
+    colors = []
+    for change_value in display_table["jobs_access_change"]:
+        if pd.isna(change_value):
+            colors.append("#bdbdbd")
+        elif change_value >= 0:
+            colors.append("#1a9850")
+        else:
+            colors.append("#d73027")
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+    axis.barh(display_table["neighbourhood"], display_table["jobs_access_change"], color=colors)
+    axis.axvline(0, color="black", linewidth=1)
+    axis.set_title("Neighbourhood Jobs Access Change")
+    axis.set_xlabel("Jobs access score change (positive is better)")
+    axis.set_ylabel("Neighbourhood")
+    axis.grid(axis="x", linestyle="--", alpha=0.35)
+    axis.set_axisbelow(True)
+    return figure
+
+
+class Plotter:
+    """Pure DataFrame→Figure builder. No DB access."""
+
+    def __init__(self, figures_dir: Path | str, dpi: int = 200) -> None:
+        self.figures_dir = Path(figures_dir)
+        self.dpi = dpi
+
+    def __repr__(self) -> str:
+        return f"Plotter(figures_dir={self.figures_dir}, dpi={self.dpi})"
+
+    def save(self, fig, filename: str, override_dir: Path | None = None) -> Path:
+        out_dir = Path(override_dir) if override_dir else self.figures_dir
+        return save_report_figure(fig, out_dir / filename, self.dpi)
+
+    def employment_access_change(self, jobs_access_comparison_table: pd.DataFrame, top_n: int = 15):
+        return create_employment_access_change_chart(jobs_access_comparison_table, top_n=top_n)
+
+
+def plot_metric_comparison_bar(df: pd.DataFrame, metric: str, label: str, pre: str, post: str, title: str) -> tuple:
+    """Side-by-side bar chart comparing a metric before and after PTN."""
+    import numpy as np
+
+    categories = df[label].tolist()
+    x = np.arange(len(categories))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.bar(x - width / 2, df[pre], width, label=pre, color="#4C72B0", alpha=0.85)
+    ax.bar(x + width / 2, df[post], width, label=post, color="#DD8452", alpha=0.85)
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, rotation=45, ha="right", fontsize=8)
+    ax.set_title(title)
+    ax.set_ylabel(metric)
+    ax.legend()
+    fig.tight_layout()
+    return fig, ax
+
+
+def plot_heatmap(df: pd.DataFrame, origin: str, dest: str, value: str, title: str, cmap: str = "YlOrRd") -> tuple:
+    """Pivot heatmap for origin-destination matrices."""
+    pivot = df.pivot(index=origin, columns=dest, values=value)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    im = ax.imshow(pivot.values, aspect="auto", cmap=cmap)
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_xticklabels(pivot.columns, rotation=45, ha="right", fontsize=7)
+    ax.set_yticklabels(pivot.index, fontsize=7)
+    plt.colorbar(im, ax=ax, label=value)
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig, ax
+
+
+def plot_choropleth_change(gdf, value_col: str, title: str, cmap: str = "RdYlGn") -> tuple:
+    """Choropleth map showing change in a metric across neighbourhoods."""
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+    gdf.plot(
+        column=value_col, cmap=cmap, linewidth=0.5, edgecolor="white",
+        legend=True, ax=ax, missing_kwds={"color": "lightgrey", "label": "No data"},
     )
-
-
-def get_neighbourhood_geodata(con: DuckDBPyConnection | None = None) -> gpd.GeoDataFrame:
-    """Load neighbourhood geometries with coverage metrics.
-
-    Args:
-        con: Optional DuckDB connection.
-
-    Returns:
-        GeoDataFrame with geometry and coverage columns.
-    """
-    stats = get_neighbourhood_coverage(con).copy()
-
-    dataset_id = DATASETS["neighbourhoods"]
-    url = f"{WPG_OPEN_DATA_URL}/api/v3/views/{dataset_id}/query.geojson"
-
-    try:
-        logger.info(f"Fetching neighbourhood geometry from {url}")
-        gdf = gpd.read_file(url)
-
-        name_col = next((c for c in gdf.columns if c.lower() == "name"), None)
-        if not name_col:
-            logger.warning(
-                "Could not find name column in neighbourhood GeoJSON")
-            return gpd.GeoDataFrame(stats)
-
-        gdf = gdf.rename(columns={name_col: "neighbourhood"})
-        gdf["match_name"] = gdf["neighbourhood"].str.upper()
-        stats["match_name"] = stats["neighbourhood"].str.upper()
-
-        merged = gdf.merge(
-            stats[["match_name", "stop_count", "stops_per_km2"]],
-            on="match_name",
-            how="left",
-        )
-
-        merged["stop_count"] = merged["stop_count"].fillna(0)
-        merged["stops_per_km2"] = merged["stops_per_km2"].fillna(0)
-        merged = merged.drop(columns=["match_name"])
-
-        return merged
-
-    except Exception as e:
-        logger.error(f"Error loading neighbourhood geometry: {e}")
-        return gpd.GeoDataFrame()
-
-
-# =============================================================================
-# STUBS FOR STEPHENIE
-# =============================================================================
-
-
-def create_coverage_bar_chart(
-    top_n: int = 20,
-    output_path: str = "reports/figures/coverage_bar.png",
-) -> None:
-    """Save top-N neighbourhood stop-count bar chart."""
-    df = get_neighbourhood_coverage().copy()
-    if df.empty:
-        logger.warning(
-            "No neighbourhood coverage data available for bar chart.")
-        return
-
-    df = df.sort_values("stop_count", ascending=False).head(top_n)
-    # For horizontal bars, sort ascending so the largest ends up on top after invert
-    df = df.sort_values("stop_count", ascending=True)
-
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    plt.figure(figsize=(9, 6))
-    plt.barh(df["neighbourhood"], df["stop_count"])
-    plt.title(f"Top {len(df)} Neighbourhoods by Stop Count")
-    plt.xlabel("Stop Count")
-    plt.tight_layout()
-    plt.savefig(out, dpi=200)
-    plt.close()
-
-    logger.info(f"Saved coverage bar chart to {out}")
-
-
-def create_coverage_distribution_plot(
-    output_path: str = "reports/figures/coverage_dist.png",
-) -> None:
-    """Save histogram of neighbourhood stop counts."""
-    df = get_neighbourhood_coverage().copy()
-    if df.empty:
-        logger.warning(
-            "No neighbourhood coverage data available for distribution plot.")
-        return
-
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    plt.figure(figsize=(8, 5))
-    plt.hist(df["stop_count"], bins=20)
-    plt.title("Distribution of Stop Counts Across Neighbourhoods")
-    plt.xlabel("Stop Count")
-    plt.ylabel("Number of Neighbourhoods")
-    plt.tight_layout()
-    plt.savefig(out, dpi=200)
-    plt.close()
-
-    logger.info(f"Saved coverage distribution plot to {out}")
-
-
-def export_summary_stats(con: DuckDBPyConnection | None = None) -> dict:
-    """Return report-ready summary statistics.
-
-    Args:
-        con: Optional DuckDB connection.
-
-    Returns:
-        Dictionary with network and coverage metrics.
-    """
-    # Network stats (aligned with current schema)
-    stops_n = int(query_df("SELECT COUNT(*) AS n FROM stops", con)["n"][0])
-    edges_n = int(
-        query_df("SELECT COUNT(*) AS n FROM stop_connections_weighted", con)["n"][0])
-
-    # Coverage stats
-    cov = get_neighbourhood_coverage(con)
-    if cov is None or cov.empty:
-        cov_stats = {
-            "neighbourhoods_n": 0,
-            "total_stops_in_neighbourhoods": 0,
-            "stops_per_km2_min": None,
-            "stops_per_km2_median": None,
-            "stops_per_km2_max": None,
-        }
-    else:
-        cov_stats = {
-            "neighbourhoods_n": int(cov["neighbourhood"].nunique()),
-            "total_stops_in_neighbourhoods": int(cov["stop_count"].sum()),
-            "stops_per_km2_min": float(cov["stops_per_km2"].min()),
-            "stops_per_km2_median": float(cov["stops_per_km2"].median()),
-            "stops_per_km2_max": float(cov["stops_per_km2"].max()),
-        }
-
-    return {
-        "num_stops": stops_n,
-        "num_edges": edges_n,
-        **cov_stats,
-    }
-
-
-def create_route_performance_chart(
-    top_n: int = 20,
-    output_path: str = "reports/figures/route_performance.png",
-) -> None:
-    """Save chart comparing pass-up counts and route performance."""
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    # View was provided in your spec
-    df = query_df(
-        f"""
-        SELECT route_short_name, passup_count, avg_deviation_seconds
-        FROM route_performance
-        WHERE passup_count > 0
-        ORDER BY passup_count DESC
-        LIMIT {int(top_n)}
-        """
-    )
-
-    if df.empty:
-        logger.warning(
-            "No route performance rows (passup_count > 0); skipping chart.")
-        return
-
-    # Sort for clean horizontal bars
-    df = df.sort_values("passup_count", ascending=True)
-
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-    ax1.barh(df["route_short_name"], df["passup_count"])
-    ax1.set_xlabel("Pass-up count")
-    ax1.set_ylabel("Route")
-
-    # Second axis for deviation (optional, but useful)
-    ax2 = ax1.twiny()
-    ax2.plot(df["avg_deviation_seconds"], df["route_short_name"], marker="o")
-    ax2.set_xlabel("Avg deviation (seconds)")
-
-    plt.title(f"Top {len(df)} Routes by Pass-ups (with Avg Deviation)")
-    plt.tight_layout()
-    plt.savefig(out, dpi=200)
-    plt.close()
-
-    logger.info(f"Saved route performance chart to {out}")
-
-
-def create_unified_map(
-    layers: list[str] | None = None,
-    output_path: str = "reports/figures/transit_map.html",
-) -> None:
-    """Build unified map with selected layers and save to HTML.
-
-    Uses Kepler.gl if installed; falls back to Folium if not.
-    """
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    if layers is None:
-        layers = ["stops", "edges", "coverage"]
-
-    stops = get_stops_with_coords() if "stops" in layers else pd.DataFrame()
-    edges = get_edges_with_routes() if "edges" in layers else pd.DataFrame()
-    gdf = get_neighbourhood_geodata() if "coverage" in layers else None
-
-    try:
-        from keplergl import KeplerGl
-        config = get_kepler_config(
-            WPG_BOUNDS["center_lat"], WPG_BOUNDS["center_lon"])
-        m = KeplerGl(height=700, config=config)
-
-        if not stops.empty:
-            m.add_data(data=stops, name="stops")
-
-        if not edges.empty:
-            m.add_data(data=edges, name="edges")
-
-        if gdf is not None and hasattr(gdf, "geometry") and not gdf.empty:
-            m.add_data(data=gdf.to_json(), name="coverage")
-
-        m.save_to_html(file_name=str(out), read_only=True)
-        logger.info(f"Saved unified Kepler map to {out}")
-        return
-
-    except Exception as e:
-        logger.warning(
-            f"Kepler.gl unavailable or failed ({e}); falling back to Folium.")
-
-    # ---- Folium fallback  ----
-    import folium
-
-    # Winnipeg center (fallback)
-    center_lat, center_lon = 49.8951, -97.1384
-    fmap = folium.Map(location=[center_lat, center_lon],
-                      zoom_start=11, tiles="CartoDB positron")
-
-    # Stops layer
-    if not stops.empty and {"stop_lat", "stop_lon"}.issubset(stops.columns):
-        fg_stops = folium.FeatureGroup(name="Stops", show=True)
-        for _, r in stops.iterrows():
-            folium.CircleMarker(
-                location=[r["stop_lat"], r["stop_lon"]],
-                radius=3,
-                fill=True,
-                fill_opacity=0.7,
-                popup=f"{r.get('stop_name', '')} ({r.get('stop_id', '')})",
-            ).add_to(fg_stops)
-        fg_stops.add_to(fmap)
-
-    # Edges layer
-    if not edges.empty and {"from_lat", "from_lon", "to_lat", "to_lon"}.issubset(edges.columns):
-        fg_edges = folium.FeatureGroup(name="Edges", show=True)
-        for _, r in edges.iterrows():
-            folium.PolyLine(
-                locations=[[r["from_lat"], r["from_lon"]],
-                           [r["to_lat"], r["to_lon"]]],
-                weight=1,
-                opacity=0.35,
-            ).add_to(fg_edges)
-        fg_edges.add_to(fmap)
-
-    # Coverage layer
-    if gdf is not None and hasattr(gdf, "geometry") and not gdf.empty:
-        fg_cov = folium.FeatureGroup(name="Coverage", show=True)
-
-        tooltip_fields = []
-        aliases = []
-        for f, a in [
-            ("neighbourhood", "Neighbourhood"),
-            ("stop_count", "Stop count"),
-            ("stops_per_km2", "Stops/km²"),
-        ]:
-            if f in gdf.columns:
-                tooltip_fields.append(f)
-                aliases.append(a)
-
-        folium.GeoJson(
-            gdf,
-            name="Coverage",
-            tooltip=folium.GeoJsonTooltip(
-                fields=tooltip_fields, aliases=aliases, localize=True),
-        ).add_to(fg_cov)
-
-        fg_cov.add_to(fmap)
-
-    folium.LayerControl(collapsed=False).add_to(fmap)
-    fmap.save(str(out))
-    logger.info(f"Saved unified Folium map to {out}")
+    ax.set_title(title, fontsize=13)
+    ax.set_axis_off()
+    fig.tight_layout()
+    return fig, ax

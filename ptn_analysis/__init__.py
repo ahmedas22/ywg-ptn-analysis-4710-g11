@@ -1,49 +1,18 @@
-"""
-Winnipeg PTN Analysis - COMP 4710 Group 11
+"""Winnipeg PTN Analysis."""
 
-Built on the Cookiecutter Data Science template (https://drivendata.github.io/cookiecutter-data-science/)
-for reproducible analysis workflows.
+from ptn_analysis.context import TransitContext
 
-Quick Start:
-    from ptn_analysis import get_edges_df, get_stops_df  # Cathy - Network
-    from ptn_analysis import get_stops_per_neighbourhood  # Sudipta - Coverage
-    from ptn_analysis import get_stops_with_coords        # Stephenie - Viz
-"""
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ptn_analysis.analysis import (
-        get_edges_df,
-        get_edges_with_routes,
-        get_neighbourhood_coverage,
-        get_neighbourhood_geodata,
-        get_neighbourhoods_list,
-        get_routes_df,
-        get_stops_df,
-        get_stops_per_community,
-        get_stops_per_neighbourhood,
-        get_stops_with_coords,
-    )
-
-__all__ = [
-    "get_edges_df",
-    "get_stops_df",
-    "get_routes_df",
-    "get_stops_per_neighbourhood",
-    "get_stops_per_community",
-    "get_neighbourhoods_list",
-    "get_stops_with_coords",
-    "get_edges_with_routes",
-    "get_neighbourhood_coverage",
-    "get_neighbourhood_geodata",
-]
+__all__ = ["TransitContext", "CoverageAnalyzer", "FrequencyAnalyzer", "NetworkAnalyzer"]
 
 
 def __getattr__(name: str):
-    """Lazy import public API functions from analysis submodule."""
-    if name in __all__:
-        from ptn_analysis import analysis
-
-        return getattr(analysis, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if name == "CoverageAnalyzer":
+        from ptn_analysis.analysis.coverage import CoverageAnalyzer
+        return CoverageAnalyzer
+    if name == "FrequencyAnalyzer":
+        from ptn_analysis.analysis.frequency import FrequencyAnalyzer
+        return FrequencyAnalyzer
+    if name == "NetworkAnalyzer":
+        from ptn_analysis.analysis.network import NetworkAnalyzer
+        return NetworkAnalyzer
+    raise AttributeError(f"module 'ptn_analysis' has no attribute {name!r}")

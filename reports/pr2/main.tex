@@ -1,0 +1,394 @@
+% Compile TWICE for page numbers: pdflatex main.tex && pdflatex main.tex
+\documentclass[11pt]{article}
+% =========================================================
+% PACKAGES
+% =========================================================
+\usepackage[margin=0.7in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage[section]{placeins}
+\usepackage{float}
+\usepackage[shortlabels]{enumitem}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{amssymb}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{xurl}
+\usepackage{hyperref}
+\usepackage{lastpage}
+\usepackage{fancyhdr}
+% =========================================================
+% FORMATTING (match PR1 style)
+% =========================================================
+\graphicspath{{figures/}}
+\setstretch{1.0}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\raggedbottom
+\sloppy
+\tolerance=1000
+\emergencystretch=3em
+\setlist[itemize]{topsep=1pt, itemsep=0pt, parsep=0pt, partopsep=0pt}
+\setlist[enumerate]{topsep=1pt, itemsep=0pt, parsep=0pt, partopsep=0pt}
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.5em}{}
+\titlespacing*{\section}{0pt}{0.8ex plus 0.2ex minus 0.2ex}{0.4ex plus 0.1ex}
+\titlespacing*{\subsection}{0pt}{0.6ex plus 0.2ex minus 0.2ex}{0.2ex plus 0.1ex}
+\setlength{\floatsep}{2pt plus 1pt minus 1pt}
+\setlength{\textfloatsep}{3pt plus 1pt minus 1pt}
+\setlength{\intextsep}{2pt plus 1pt minus 1pt}
+\captionsetup{font=footnotesize, labelfont=bf, skip=2pt}
+\renewcommand{\arraystretch}{1.05}
+% Aggressive float placement
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.75}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue,
+  citecolor=black,
+  pdftitle={COMP 4710 Progress Report 2 - Group 11}
+}
+% =========================================================
+% HEADER AND FOOTER
+% =========================================================
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textbf{COMP 4710} - Progress Report 2}
+\rhead{Winter 2026}
+\cfoot{Page \thepage\ of \pageref{LastPage}}
+\setlength{\headheight}{14pt}
+% =========================================================
+\begin{document}
+\small
+% -- Title Block (matching PR1) --
+\begin{center}
+    {\LARGE \textbf{Network Analysis of Winnipeg's 2025\\Primary Transit Network Overhaul}}\\[0.4em]
+    {\large \textbf{COMP 4710 - Introduction to Data Mining}}\\
+    {\large (Winter 2026) | \textbf{Progress Report 2 - Group 11}}
+\end{center}
+\thispagestyle{fancy}
+
+\vspace{0.2em}
+\noindent\rule{\textwidth}{0.4pt}
+
+% ============================================================
+\section{Group Roles}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Member} & \textbf{Role} & \textbf{Primary Responsibilities} \\
+\midrule
+Ahmed Hasan & \textbf{Group Lead}, Data Eng. & Pre/post comparison, clustering, classification, capacity analysis, pipeline \\
+Cathy Li & Network Analysis & Network metrics, hub ranking, transfer burden heatmap \\
+Stephenie Michael & Visualization & Summary panel, coverage cluster map, interactive dashboard \\
+Sudipta Sarker & Coverage Analysis & Coverage change choropleth, underserved neighbourhood ranking \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ============================================================
+\section{Progress to Date}
+
+The pipeline is feed-aware: every metric carries a \texttt{feed\_id} column for isolation-safe pre/post comparison. Core data engineering, pipeline, and analysis modules are complete; remaining work focuses on figure refinement, the interactive dashboard, presentation, and final report assembly.
+
+\begin{table}[H]
+\centering\scriptsize
+\begin{tabularx}{\textwidth}{@{}l r X@{}}
+\toprule
+\textbf{Source} & \textbf{Records} & \textbf{Description} \\
+\midrule
+GTFS archives (4 feeds) & 4.9M & Stops, routes, trips, stop\_times, shapes \\
+Winnipeg Transit API & 8.4M & 194K pass-ups, 5.9M on-time, 2.3M passenger counts \\
+r5py travel-time matrices & 82.8M & Origin--destination transit \& walking times (2 feeds $\times$ 2 modes) \\
+Census 2021 (CHASS) & 76K & 1,134 DAs $\times$ 67 variables \\
+StatCan / CBP & 1.3M & Workplace flows, business register, DA-level jobs proxy \\
+Derived views \& aggregations & 12.3M & Route stats, stop stats, materialized analytics views \\
+\midrule
+\textbf{Total} & \textbf{79 tables} & \textbf{109.8M records in DuckDB} \\
+\bottomrule
+\end{tabularx}
+\caption{Database summary.}
+\label{tab:database}
+\end{table}
+
+% ----------------------------------------
+\subsection{Pre/Post PTN Comparison (Ahmed)}
+
+Ahmed designed the pre/post comparison framework using Jaccard similarity on shared stop sets to match pre-PTN routes to their post-PTN equivalents (via Python set operations). Routes sharing more than 30\% of stops were considered matches. Of 87 pre-PTN routes, approximately 55 kept their name; the rest were matched by stop overlap or classified as discontinued/new. Table~\ref{tab:prepost} summarizes the key before-and-after metrics.
+
+\begin{table}[H]
+\centering\footnotesize
+\begin{tabular}{l r r r r}
+\toprule
+\textbf{Metric} & \textbf{Pre-PTN} & \textbf{Current} & \textbf{Change} & \textbf{$p$-value} \\
+\midrule
+Routes operating & 64 & 71 & +7 & --- \\
+Network avg headway & 38.1 min & 32.4 min & $-$5.7 min & $<$0.01 \\
+Routes $<$15 min headway & 6 & 12 & +6 & --- \\
+Routes $<$30 min headway & 21 & 31 & +10 & --- \\
+\bottomrule
+\end{tabular}
+\caption{Pre/post PTN comparison. Paired $t$-test confirms significant headway improvement.}
+\label{tab:prepost}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.88\textwidth]{prepost_combined.png}
+    \caption{Pre-PTN vs current route-level impact. Left: headway change. Centre: speed change. Right: trip count change. Green = improved, red = worsened.}
+    \label{fig:prepost}
+\end{figure}
+
+% ----------------------------------------
+\subsection{Clustering (Ahmed)}
+
+Ahmed used k-means clustering (scikit-learn) to group routes by their hourly departure patterns into four service archetypes: peak-only, flat all-day, extended-evening, and low-frequency. A second clustering pass groups 237 neighbourhoods by stop count, stop density, and jobs access score into four service clusters. Census departure demand was validated against GTFS scheduled supply to confirm temporal alignment.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{demand_validation.png}
+        \caption{Census departure demand vs GTFS supply; commute duration distribution.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{clustering_elbow.png}
+        \caption{Elbow plot for route temporal clustering (k=4 selected).}
+    \end{subfigure}\\[4pt]
+    \begin{subfigure}[t]{0.62\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{clustering_combined.png}
+        \caption{Left: four route service archetypes by hourly departure profiles. Right: neighbourhood service clusters (k=4) by stop density, jobs access, and stop count.}
+    \end{subfigure}
+    \caption{Data validation, cluster selection, and final clustering results.}
+    \label{fig:clustering}
+\end{figure}
+
+% ----------------------------------------
+\subsection{Classification (Ahmed)}
+
+A Random Forest classifier tested whether PTN tier labels align with actual service metrics (top row of Figure~\ref{fig:classification}). A second classifier tested whether census demographics alone predict transit coverage quality (bottom row), finding that population density is the strongest predictor --- suggesting that service allocation follows density rather than need.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.55\textwidth]{classification_combined.png}
+    \caption{Top: route tier classifier feature importance and confusion matrix. Bottom: neighbourhood coverage classifier using census demographics only. Balanced accuracy shown per classifier.}
+    \label{fig:classification}
+\end{figure}
+
+% ----------------------------------------
+\subsection{Capacity \& Reliability (Ahmed)}
+
+Ahmed modelled pass-up counts to identify routes under the most capacity stress and ranked neighbourhoods by upgrade priority using transit dependency, pass-up rate, and jobs-access gap.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.42\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{upgrade_priority.png}
+        \caption{Top 10 routes by upgrade priority score.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.42\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{reliability_ontime.png}
+        \caption{On-time performance by route.}
+    \end{subfigure}
+    \caption{Capacity stress and reliability analysis across the transit network.}
+    \label{fig:capacity}
+\end{figure}
+
+% ----------------------------------------
+\subsection{Equity \& Accessibility (Ahmed)}
+
+Figure~\ref{fig:equity_access} combines six equity and accessibility dimensions. A Transit-Oriented Development gap analysis identifies 60+ neighbourhoods with high population density but low stop density. Travel time matrices from r5py quantify the transit advantage over walking. Census overlays show transit commute share, immigrant concentration, and employment access change.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.82\textwidth]{equity_combined.png}
+    \caption{Equity and accessibility (2$\times$3). Top: Transit-Oriented Development gap score (z-scored density minus z-scored stop access; red = underserved), average transit travel time from each neighbourhood to all others (r5py, lower = better connected), transit time savings vs walking (green = large advantage). Bottom: transit commute modal share (Census 2021), recent immigrant concentration, employment access change (pre-PTN vs current).}
+    \label{fig:equity_access}
+\end{figure}
+
+% ----------------------------------------
+\subsection{Network Analysis (Cathy)}
+
+\textit{[Placeholder --- Cathy to complete. Expected: pre/post network metrics comparison, weighted centrality analysis, hub ranking with transfer burden, community detection alignment with neighbourhood boundaries.]}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{network_metrics_prepost.png}
+        \caption{Network metrics before and after PTN.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{transfer_heatmap.png}
+        \caption{Hub-to-hub transfer burden (hop count).}
+    \end{subfigure}
+    \caption{Network analysis. See \texttt{1.2-cathy-pr2-network.ipynb}.}
+    \label{fig:network}
+\end{figure}
+
+% ----------------------------------------
+\subsection{Coverage \& Equity (Sudipta)}
+
+\textit{[Placeholder --- Sudipta to complete. Expected: coverage change choropleth comparing pre-PTN and current stop density, underserved neighbourhood ranking, equity cross-tabulation with census demographics.]}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{coverage_change_map.png}
+        \caption{Stop density change by neighbourhood.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{underserved_neighbourhoods.png}
+        \caption{Bottom-quartile neighbourhoods by stop density.}
+    \end{subfigure}
+    \caption{Coverage change analysis. See \texttt{1.3-sudipta-pr2-coverage.ipynb}.}
+    \label{fig:coverage}
+\end{figure}
+
+% ----------------------------------------
+\subsection{Visualization \& Dashboard (Stephenie)}
+
+\textit{[Placeholder --- Stephenie to complete. Expected: KPI summary panel by PTN tier, coverage cluster choropleth, network community scatter map, interactive Streamlit dashboard.]}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{pr2_summary_panel.png}
+        \caption{KPI summary panel by PTN tier.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.44\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{coverage_cluster_map.png}
+        \caption{Neighbourhood coverage categories.}
+    \end{subfigure}
+    \caption{Visualization summary. See \texttt{2.1-stephenie-pr2-viz.ipynb}.}
+    \label{fig:viz}
+\end{figure}
+
+% ----------------------------------------
+\subsection{Challenges and Mitigation}
+
+\begin{table}[H]
+\centering\scriptsize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+\textbf{Challenge} & \textbf{Resolution} \\
+\midrule
+Route identity across PTN redesign & Jaccard stop-set matching; 55 exact-name + overlap-matched routes \\
+Census DA geometry joins & CHASS CSV joined to Open Data boundaries via spatial intersection \\
+Pass-up count model selection & Statistical count model chosen to handle overdispersed pass-up data \\
+PTN tier names changed in redesign & Tier classifier reframed as consistency check since labels were originally assigned using similar features \\
+Schedule-based analysis only & GTFS schedules used; no real-time vehicle tracking available \\
+Employment data proxy & Business register establishment counts used in place of commute flows \\
+Census 2021 income timing & Income reference year is 2020 (COVID year); interpret with caution \\
+PTN still evolving & Results represent a transitional snapshot; network changes are ongoing \\
+\bottomrule
+\end{tabularx}
+\caption{Challenges encountered, limitations, and resolutions applied.}
+\label{tab:challenges}
+\end{table}
+
+% ============================================================
+\section{Updated Plan and Timeline}
+
+The core pipeline and analysis modules were completed ahead of schedule. Remaining work focuses on figure refinement, the interactive dashboard, presentation preparation, and final report assembly.
+
+\begin{table}[H]
+\centering\scriptsize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{@{}l l X X X X@{}}
+\toprule
+\textbf{Period} & \textbf{Milestone} & \textbf{Ahmed} & \textbf{Cathy} & \textbf{Stephenie} & \textbf{Sudipta} \\
+\midrule
+Jan 20 -- Feb 7 & PR1 \checkmark & GTFS pipeline, frequency module & Network module, graph stats & Visualizations, interactive maps & Coverage analysis, density stats \\
+\addlinespace
+Feb 10 -- Mar 13 & PR2 \checkmark & Pre/post comparison, clustering, classification, capacity & Pre/post network metrics, transfer heatmap & Summary panel, coverage cluster map & Coverage change choropleth \\
+\addlinespace
+Mar 14 -- 30 & Polish & Finalize figures; dashboard & Presentation slides & Dashboard styling; presentation visuals & Presentation slides \\
+\addlinespace
+Mar 31 -- Apr 5 & Final & Methodology writeup; report assembly & Network section writeup & Report formatting \& final edits & Coverage section writeup \\
+\addlinespace
+\textbf{April 6} & \textbf{Final due} & Submit & Submit & Submit & Submit \\
+\addlinespace
+Apr 7 -- 9 & Presentation & Technical accuracy & Network slides & Design \& visuals & Coverage slides \\
+\bottomrule
+\end{tabularx}
+\caption{Updated project timeline with per-member task allocation.}
+\label{tab:timeline}
+\end{table}
+
+% ============================================================
+\section{Acknowledgement}
+
+No assistance was received from the TA. We thank Winnipeg Transit, the City of Winnipeg Open Data Portal, Statistics Canada (Census 2021 and Place of Work tables), the CHASS Census Analyser (University of Toronto), and Innovation, Science and Economic Development Canada (Canadian Business Patterns).
+
+% ============================================================
+\section{Consent Declaration}
+
+We, the undersigned, have reviewed this document and consent to submit it as Progress Report 2 for our group project.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{l l l}
+\toprule
+\textbf{Member} & \textbf{Initials for Signature} & \textbf{Date} \\
+\midrule
+Ahmed Hasan & ASH & March 13, 2026 \\
+Cathy Li & & \\
+Stephenie Michael & & \\
+Sudipta Sarker & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+\appendix
+\section{References \& Datasets}
+
+\scriptsize
+\begin{itemize}[leftmargin=*]
+    \item Winnipeg Transit. ``GTFS Feed.'' \url{https://winnipegtransit.com/en/schedules-maps-tools/open-data/}
+    \item City of Winnipeg. ``Open Data Portal.'' \url{https://data.winnipeg.ca/}
+    \item Statistics Canada. ``Census Profile, 2021 Census of Population.'' Catalogue no.\ 98-316-X2016001. Dissemination area level. Accessed via CHASS Census Analyser, University of Toronto, March 2026.
+    \item CHASS Data Centre, University of Toronto. ``Census Analyser.'' \url{https://dc.chass.utoronto.ca/census/}
+    \item Innovation, Science and Economic Development Canada. ``Canadian Business Patterns (CBP), December 2022.'' Dissemination area level establishment counts.
+    \item J.\ Allen \& S.\ Farber. ``Planning transport for social inclusion.'' \textit{Transportation Research Part D}, 2020.
+    \item G.\ Boeing. ``Street Network Models and Indicators for Every Urban Area in the World.'' \textit{Geographical Analysis}, 2021.
+    \item S.\ Ho. \textit{Identifying clusters of transit unreliability through an equity lens: Winnipeg, Manitoba}. Western University, 2024.
+    \item M.\ Iacono, K.\ Krizek \& A.\ El-Geneidy. ``Measuring Non-Motorized Accessibility.'' \textit{J.\ Transport Geography}, vol.\ 18, pp.\ 133--140, 2010.
+    \item R.\ Lucas. ``Transport and Social Exclusion.'' \textit{Transport Policy}, vol.\ 20, pp.\ 105--113, 2012.
+    \item S.\ Chicken. ``Why Winnipeg doesn't know who's riding the bus.'' \textit{The Narwhal}, 2024.
+    \item T.\ Bao et al. ``PubtraVis: Public transit visualization.'' \textit{ISPRS Int.\ J.\ Geo-Inf.}, vol.\ 9, no.\ 4, 2020.
+    \item TRB. \textit{Transit Capacity and Quality of Service Manual} (TCQSM), 3rd ed., 2013. 400\,m pedestrian catchment standard.
+    \item WalkScore. ``Transit Score Methodology.'' \url{https://www.walkscore.com/methodology.shtml}, 2011.
+    \item C.\ Fink et al. ``r5py: Rapid Realistic Routing with R5 in Python.'' \url{https://r5py.readthedocs.io/}, 2022.
+    \item Y.\ Yuan et al. ``city2graph: From urban spatial data to graph representations.'' \url{https://github.com/c2g-dev/city2graph}, 2024.
+    \item Hagberg, A., Schult, D.\ \& Swart, P. ``NetworkX.'' \url{https://networkx.org/}
+    \item Jordahl, K.\ et al. ``GeoPandas.'' \url{https://geopandas.org/}
+    \item DuckDB Foundation. ``DuckDB: In-process SQL OLAP database.'' \url{https://duckdb.org}
+    \item MRCagney. ``gtfs-kit: A Python toolkit for GTFS feeds.'' \url{https://github.com/mrcagney/gtfs_kit}
+    \item Pedregosa, F.\ et al. ``Scikit-learn: Machine Learning in Python.'' \textit{JMLR}, vol.\ 12, 2011.
+\end{itemize}
+
+\end{document}
