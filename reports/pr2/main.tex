@@ -265,21 +265,46 @@ Figure~\ref{fig:equity_access} combines six equity and accessibility dimensions.
 \end{figure}
 
 % ----------------------------------------
-\subsection{Visualization \& Dashboard (Stephenie)}
+Stephenie developed the visualization component of the project to summarize key findings from the analysis pipeline and present them in a clear and interpretable format. While earlier sections focus on statistical modelling and network analysis, this section focuses on communicating the results visually so that patterns in transit service distribution and accessibility can be easily interpreted. The visualizations were generated using Python within the project analysis notebooks and exported automatically into the report pipeline so that figures update when the underlying data changes.
 
-\textit{[Placeholder --- Stephenie to complete. Expected: KPI summary panel by PTN tier, coverage cluster choropleth, network community scatter map, interactive Streamlit dashboard.]}
+Figure~\ref{fig:viz} presents four complementary visualizations that summarize different aspects of the Primary Transit Network (PTN) redesign.
+
+The first visualization is a \textbf{KPI summary panel} (top-left). This panel aggregates several key transit indicators derived from the GTFS schedule data stored in DuckDB. Metrics such as route counts and service characteristics are summarized to provide a high-level overview of the PTN network. The purpose of this panel is to provide a quick snapshot of the overall system structure before examining more detailed spatial or route-level visualizations.
+
+The second visualization is a \textbf{neighbourhood coverage cluster map} (top-right). This map illustrates spatial variation in transit service coverage across Winnipeg neighbourhoods. Transit stops from the GTFS feed were spatially joined to neighbourhood boundaries using GeoPandas, and stop-density statistics were calculated for each neighbourhood. These values were then categorized into coverage groups representing high, medium, and low transit accessibility. The resulting choropleth map highlights neighbourhoods with strong transit coverage as well as areas where stop access remains relatively limited.
+
+The third visualization is a \textbf{network communities plot} (bottom-left). Using the network graph constructed from GTFS stop connections, community detection methods were applied to identify clusters of stops that are more strongly connected within the network. These clusters help reveal how the transit system organizes spatially and can indicate natural service regions within the city. Visualizing these communities helps illustrate the structural organization of the transit network beyond individual routes.
+
+The fourth visualization is a \textbf{before-and-after route comparison} (bottom-right). This chart summarizes the impact of the PTN redesign by comparing routes that were retained, newly introduced, or removed. The visualization highlights how the network structure changed following the PTN overhaul and provides a concise summary of the magnitude of route restructuring.
+
+Together, these visualizations complement the analytical work presented in earlier sections by providing both spatial and structural perspectives on the transit network. While statistical models and network metrics quantify changes in the system, the visualization layer helps communicate these patterns clearly and supports interpretation of how the PTN redesign affects service distribution across Winnipeg.
 
 \begin{figure}[H]
     \centering
-    \begin{subfigure}[t]{0.44\textwidth}
+    \begin{subfigure}{0.48\textwidth}
         \centering
-        \includegraphics[width=\textwidth]{pr2_summary_panel.png}
+        \includegraphics[width=\linewidth]{figures/pr2_summary_panel.png}
         \caption{KPI summary panel by PTN tier.}
-    \end{subfigure}\hfill
-    \begin{subfigure}[t]{0.44\textwidth}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.48\textwidth}
         \centering
-        \includegraphics[width=\textwidth]{coverage_cluster_map.png}
+        \includegraphics[width=\linewidth]{figures/coverage_cluster_map.png}
         \caption{Neighbourhood coverage categories.}
+    \end{subfigure}
+
+    \vspace{0.5em}
+
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{figures/network_communities_pr2.png}
+        \caption{Transit network communities.}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{figures/before_after_routes.png}
+        \caption{Before/after PTN route comparison.}
     \end{subfigure}
     \caption{Visualization summary. See \texttt{2.1-stephenie-pr2-viz.ipynb}.}
     \label{fig:viz}
@@ -356,7 +381,7 @@ We, the undersigned, have reviewed this document and consent to submit it as Pro
 \midrule
 Ahmed Hasan & ASH & March 13, 2026 \\
 Cathy Li & & \\
-Stephenie Michael & & \\
+Stephenie Michael & SM & March 12, 2026 \\
 Sudipta Sarker & & \\
 \bottomrule
 \end{tabular}
