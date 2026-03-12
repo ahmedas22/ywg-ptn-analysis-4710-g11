@@ -468,6 +468,7 @@ class NetworkAnalyzer(AnalyzerBase):
         """
         return pd.DataFrame()
 
+
     def community_boundary_alignment(self) -> pd.DataFrame:
         """Compare Louvain communities against official neighbourhood boundaries.
 
@@ -480,7 +481,61 @@ class NetworkAnalyzer(AnalyzerBase):
             # 3. Group by (community_id, neighbourhood), count stops
             # 4. overlap_ratio = group_count / community_total
         """
-        return pd.DataFrame()
+        communities = self.detect_communities()
+        if communities.empty:
+            return pd.DataFrame()
+
+        possible_tables = [
+            "neighbourhood_stop_count_density",
+            "stop_neighbourhoods",
+            "stops_with_neighbourhood"
+        ]
+        stops_nbh = pd.DataFrame()
+        for table in possible_tables:
+            full_table = self._table(table)  # adds city prefix (e.g., ywg_neighbourhood_stop_count_density)
+            if self._db.relation_exists(full_table):
+                query = f"""
+                    SELECT stop_id, neighbourhood
+                    FROM {full_table}
+                    WHERE feed_id = :feed_id
+                """
+                stops_nbh = self._db.query(query, {"feed_id": self._feed_id})
+                if not stops_nbh.empty:
+                    break
+
+        if stops_nbh.empty:
+            logger.warning("No stop-neighbourhood mapping found. Cannot compute community alignment.")
+            return pd.DataFrame()
+
+        merged = communities.merge(stops_nbh, on="stop_id", how="inner")
+        if merged.empty:
+            return pd.DataFrame()
+
+        grouped = merged.groupby(["community_id", "neighbourhood"]).size().reset_index(name="stop_count")
+        community_totals = grouped.groupby("community_id")["stop_count"].sum().rename("community_total")
+        result = grouped.merge(community_totals, on="community_id")
+        result["overlap_ratio"] = result["stop_count"] / result["community_total"]
+
+        return result[["community_id", "neighbourhood", "stop_count", "overlap_ratio"]]
+
+
+    def weighted_centrality_comparison(self, top_n: int = 20) -> pd.DataFrame:
+        """Return top_n stops with both unweighted and weighted betweenness.
+
+        Args:
+            top_n: Number of top stops to return (by unweighted betweenness).
+
+        Returns:
+            DataFrame with stop_id, stop_name, betweenness (unweighted), weighted_betweenness.
+        """
+        unweighted = self.betweenness_centrality()[["stop_id", "betweenness"]]
+        weighted = self.weighted_betweenness_centrality()[["stop_id", "weighted_betweenness"]]
+        merged = unweighted.merge(weighted, on="stop_id")
+        stops = self.stops_df()[["stop_id", "stop_name"]]
+        merged = merged.merge(stops, on="stop_id")
+
+        return merged.nlargest(top_n, "betweenness")[["stop_id", "stop_name", "betweenness", "weighted_betweenness"]]
+    
 
     def build_resilience_metrics_table(self) -> pd.DataFrame:
         """Compute network resilience metrics for the current feed.
