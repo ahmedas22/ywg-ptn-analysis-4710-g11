@@ -41,6 +41,13 @@ SERVING_EXPORT_DEFINITIONS: list[tuple[str, bool, str]] = [
     ("transit_trip_delay_summary", True, ""),
     ("h3_stop_service_metrics", False, "WHERE feed_id = 'current'"),
     ("h3_live_delay_metrics", False, ""),
+    ("stop_policy_alignment", False, ""),
+    ("stop_housing_growth", False, ""),
+    ("neighbourhood_poverty_overlay", False, ""),
+    ("census_by_neighbourhood", False, ""),
+    ("stop_times", False, "WHERE feed_id = 'current'"),
+    ("trips", False, "WHERE feed_id = 'current'"),
+    ("route_ptn_tiers", False, "WHERE feed_id = 'current'"),
 ]
 
 STATUS_RELATIONS: list[tuple[str, bool]] = [
@@ -120,11 +127,20 @@ def export_serving_duckdb(db_instance, serving_db, city_key: str) -> dict[str, i
     serving_path.parent.mkdir(parents=True, exist_ok=True)
     serving_path.unlink(missing_ok=True)
     results: dict[str, int] = {}
+    working_path = str(db_instance.path)
+
+    # Close the working DB's SQLAlchemy engine so DuckDB can ATTACH it.
+    db_instance.close()
+
     with duckdb.connect(str(serving_path)) as serving_connection:
         try:
             serving_connection.execute("LOAD spatial;")
         except Exception:
             serving_connection.execute("INSTALL spatial; LOAD spatial;")
+
+        serving_connection.execute(
+            f"ATTACH '{working_path}' AS working (READ_ONLY);"
+        )
 
         for base_name, is_transit, filter_sql in SERVING_EXPORT_DEFINITIONS:
             source_name = (
@@ -132,14 +148,24 @@ def export_serving_duckdb(db_instance, serving_db, city_key: str) -> dict[str, i
                 if is_transit
                 else db_instance.table_name(base_name, city_key)
             )
-            if not db_instance.relation_exists(source_name):
+            # Check existence via the attached working DB directly.
+            try:
+                serving_connection.execute(
+                    f"SELECT 1 FROM working.{source_name} LIMIT 0"
+                )
+            except duckdb.CatalogException:
                 continue
-            query_sql = f"SELECT * FROM {source_name} {filter_sql}".strip()
-            export_frame = db_instance.query(query_sql)
-            serving_connection.register("export_frame", export_frame)
-            serving_connection.execute(f"CREATE TABLE {source_name} AS SELECT * FROM export_frame")
-            serving_connection.unregister("export_frame")
-            results[source_name] = len(export_frame)
+            query_sql = (
+                f"CREATE TABLE {source_name} AS "
+                f"SELECT * FROM working.{source_name} {filter_sql}"
+            ).strip()
+            serving_connection.execute(query_sql)
+            count = serving_connection.execute(
+                f"SELECT count(*) FROM {source_name}"
+            ).fetchone()[0]
+            results[source_name] = count
+
+        serving_connection.execute("DETACH working;")
     return results
 
 

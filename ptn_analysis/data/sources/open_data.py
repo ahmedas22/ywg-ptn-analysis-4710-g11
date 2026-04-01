@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from hashlib import md5
 import json
+import os
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -24,13 +25,41 @@ from ptn_analysis.context.config import (
     WPG_OPEN_DATA_URL,
 )
 from ptn_analysis.context.db import TransitDB
-from ptn_analysis.context.http import Downloader
-from ptn_analysis.data.sources.common import load_geojson_table, open_data_headers
+from ptn_analysis.context.http import DataClient
+
+
+def open_data_headers(city_key: str | None = None) -> dict[str, str]:
+    """Build Socrata-style request headers."""
+    headers: dict[str, str] = {"Accept": "application/json"}
+    token = ""
+    if city_key == "ywg":
+        token = os.getenv("WPG_OPEN_DATA_APP_TOKEN", "")
+    if not token and city_key:
+        token = os.getenv(f"SOCRATA_APP_TOKEN_{city_key.upper()}", "")
+    if not token:
+        token = os.getenv("SOCRATA_APP_TOKEN", "")
+    if token:
+        headers["X-App-Token"] = token
+    return headers
+
+
+def load_geojson_table(
+    table_name: str, path: Path, db_instance: TransitDB,
+    select: str = "*, geom AS geometry",
+) -> int:
+    """Load a GeoJSON file into DuckDB via ST_Read."""
+    import re as _re
+    if not _re.match(r"^[a-z_][a-z0-9_]*$", table_name):
+        raise ValueError(f"Invalid table name: {table_name!r}")
+    db_instance.execute(
+        f"CREATE OR REPLACE TABLE {table_name} AS SELECT {select} FROM ST_Read('{path.as_posix()}')"
+    )
+    return db_instance.count(table_name) or 0
 
 OPEN_DATA_DATASET_WORKERS = 6
 BOUNDARY_TABLE_NAMES = {"neighbourhoods", "community_areas"}
 
-_downloader = Downloader()
+_downloader = DataClient()
 
 CITY_OPEN_DATA_CONFIG = {
     "ywg": {
@@ -86,6 +115,70 @@ CITY_OPEN_DATA_CONFIG = {
                 "dataset_id": DATASETS["census_poverty_2021"],
                 "format": "geojson",
             },
+            # ── Tier 1: equity & demographics ──────────────────────────
+            {
+                "base_table_name": "poverty_mbm",
+                "dataset_id": DATASETS["poverty_mbm"],
+                "format": "geojson",
+            },
+            {
+                "base_table_name": "census_transport_mode",
+                "dataset_id": DATASETS["census_transport_mode"],
+                "format": "json",
+            },
+            {
+                "base_table_name": "census_visible_minority",
+                "dataset_id": DATASETS["census_visible_minority"],
+                "format": "json",
+            },
+            {
+                "base_table_name": "census_aboriginal",
+                "dataset_id": DATASETS["census_aboriginal"],
+                "format": "json",
+            },
+            {
+                "base_table_name": "development_permits",
+                "dataset_id": DATASETS["development_permits"],
+                "date_column": "issue_date",
+                "use_ptn_dates": False,
+                "format": "geojson",
+            },
+            {
+                "base_table_name": "passup_heatmap",
+                "dataset_id": DATASETS["passup_heatmap"],
+                "format": "geojson",
+            },
+            # ── Tier 2: planning & zoning ──────────────────────────────
+            {
+                "base_table_name": "ourwpg_mixed_use_corridors",
+                "dataset_id": DATASETS["ourwpg_mixed_use_corridors"],
+                "format": "geojson",
+            },
+            {
+                "base_table_name": "ourwpg_major_redev_sites",
+                "dataset_id": DATASETS["ourwpg_major_redev_sites"],
+                "format": "geojson",
+            },
+            {
+                "base_table_name": "ourwpg_mature_communities",
+                "dataset_id": DATASETS["ourwpg_mature_communities"],
+                "format": "geojson",
+            },
+            {
+                "base_table_name": "ourwpg_regional_centres",
+                "dataset_id": DATASETS["ourwpg_regional_centres"],
+                "format": "geojson",
+            },
+            {
+                "base_table_name": "zoning_parcels",
+                "dataset_id": DATASETS["zoning_parcels"],
+                "format": "geojson",
+            },
+            {
+                "base_table_name": "city_population",
+                "dataset_id": DATASETS["city_population"],
+                "format": "json",
+            },
         ],
     }
 }
@@ -95,6 +188,7 @@ JSON_PAGE_LIMIT = OPEN_DATA_PAGE_LIMIT
 OPEN_DATA_FETCH_WORKERS = 12
 OPEN_DATA_RAW_DIR = RAW_DATA_DIR / "open_data"
 OPEN_DATA_CACHE_DIR = CACHE_DATA_DIR / "open_data"
+PARQUET_CACHE_DIR = CACHE_DATA_DIR / "open_data"
 
 
 def dataset_raw_dir(source, base_table_name: str) -> Path:
@@ -705,7 +799,86 @@ def _prepare_dataset_caches(ctx: _SourceContext, datasets: list[dict], progress_
     return prepared_caches
 
 
+def _parquet_cache_path(base_table_name: str) -> Path:
+    """Return the parquet snapshot path for one dataset."""
+    return PARQUET_CACHE_DIR / f"{base_table_name}.parquet"
+
+
+def _hydrate_from_parquet(ctx: _SourceContext, dataset: dict) -> bool:
+    """Reconstitute raw file from tracked parquet snapshot if available.
+
+    Returns True if hydration succeeded, False otherwise.
+    """
+    base_table_name = dataset["base_table_name"]
+    parquet_path = _parquet_cache_path(base_table_name)
+    if not parquet_path.exists():
+        return False
+
+    fmt = dataset.get("format", "geojson")
+    if fmt == "json":
+        raw_path = merged_cache_path(ctx, base_table_name, "jsonl")
+        if is_valid_jsonl_cache(raw_path):
+            return True
+        logger.info(f"Hydrating {base_table_name} from parquet snapshot → JSONL")
+        df = pd.read_parquet(parquet_path)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_json(raw_path, orient="records", lines=True)
+        return True
+    else:
+        raw_path = merged_cache_path(ctx, base_table_name, "geojson")
+        if is_valid_geojson_cache(raw_path):
+            return True
+        logger.info(f"Hydrating {base_table_name} from parquet snapshot → GeoJSON")
+        gdf = gpd.read_parquet(parquet_path)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        gdf.to_file(raw_path, driver="GeoJSON")
+        return True
+
+
+def snapshot_to_parquet(city_key: str) -> dict[str, int]:
+    """Convert raw open data files to tracked parquet snapshots.
+
+    Args:
+        city_key: City namespace.
+
+    Returns:
+        Mapping of dataset name → row count.
+    """
+    config = get_config(city_key)
+    all_datasets = config["boundary_datasets"] + config["datasets"]
+    ctx = _SourceContext(city_key)
+    PARQUET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    results: dict[str, int] = {}
+
+    for dataset in all_datasets:
+        name = dataset["base_table_name"]
+        fmt = dataset.get("format", "geojson")
+        parquet_path = _parquet_cache_path(name)
+
+        if fmt == "json":
+            raw_path = merged_cache_path(ctx, name, "jsonl")
+            if not raw_path.exists() or raw_path.stat().st_size == 0:
+                logger.warning(f"No raw JSONL for {name}, skipping snapshot")
+                continue
+            df = pd.read_json(raw_path, lines=True)
+            df.to_parquet(parquet_path, compression="zstd")
+            results[name] = len(df)
+        else:
+            raw_path = merged_cache_path(ctx, name, "geojson")
+            if not raw_path.exists() or raw_path.stat().st_size == 0:
+                logger.warning(f"No raw GeoJSON for {name}, skipping snapshot")
+                continue
+            gdf = gpd.read_file(raw_path)
+            gdf.to_parquet(parquet_path, compression="zstd")
+            results[name] = len(gdf)
+
+        logger.info(f"Snapshot {name}: {results[name]:,} rows → {parquet_path.name}")
+
+    return results
+
+
 def _prepare_dataset_cache(ctx: _SourceContext, dataset: dict, progress_callback=None) -> Path:
+    _hydrate_from_parquet(ctx, dataset)
     if dataset.get("format", "geojson") == "json":
         return prepare_json_cache(ctx, dataset, progress_callback=progress_callback)
     return prepare_geojson_cache_for_dataset(ctx, dataset, BOUNDARY_TABLE_NAMES)

@@ -7,10 +7,7 @@ argument.  Call ``create_source()`` once and pass the result everywhere.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import md5
 import json
-from pathlib import Path
-import time
 from typing import Any
 
 import httpx
@@ -22,7 +19,7 @@ from ptn_analysis.context.config import (
     TRANSIT_API_CACHE_DIR,
     WINNIPEG_TRANSIT_API_KEY,
 )
-from ptn_analysis.context.http import ApiClient
+from ptn_analysis.context.http import DataClient
 
 API_BASE_URL = "https://api.winnipegtransit.com/v4"
 API_CACHE_DIR = TRANSIT_API_CACHE_DIR
@@ -39,7 +36,7 @@ class _SourceContext:
     __slots__ = ("city_key", "api_key", "client")
     city_key: str
     api_key: str
-    client: ApiClient
+    client: DataClient
 
 
 def create_source(
@@ -56,9 +53,7 @@ def create_source(
         Configured source context.
     """
     resolved_key = api_key or WINNIPEG_TRANSIT_API_KEY
-    client = ApiClient(
-        api_key=resolved_key,
-        base_url=API_BASE_URL,
+    client = DataClient(
         cache_dir=API_CACHE_DIR,
         throttle_rpm=REQUESTS_PER_MINUTE,
     )
@@ -432,7 +427,7 @@ def _fetch_json(
     params: dict[str, Any] | None = None,
     force_refresh: bool = False,
 ) -> dict[str, Any]:
-    """Fetch a JSON endpoint with JSONL cache and throttle."""
+    """Fetch a JSON endpoint with cache and throttle via DataClient."""
     if not ctx.api_key:
         raise ValueError("No Winnipeg Transit API key. Set WINNIPEG_TRANSIT_API_KEY in .env.")
     request_params: dict[str, Any] = {
@@ -442,65 +437,26 @@ def _fetch_json(
     if params:
         request_params.update(params)
 
-    family = _cache_family(path)
-    cache_key = _cache_key(path, request_params)
+    # Cache using DataClient's JSONL helpers
+    family = path.replace(".json", "").split("/")[0].replace("-", "_")
+    cache_params = {k: v for k, v in sorted(request_params.items()) if k != "api-key"}
+    cache_params["_path"] = path
 
     if not force_refresh:
-        cached = _jsonl_read(family, cache_key)
+        cached = ctx.client.jsonl_read(API_CACHE_DIR, family, cache_params)
         if cached is not None:
             return cached
 
-    ctx.client._throttle()
-    payload = ctx.client.request(
-        f"{API_BASE_URL}/{path}",
-        params=request_params,
-        response_format="json",
-        timeout=TRANSIT_API_TIMEOUT_SECONDS,
+    payload = ctx.client.api_fetch(
+        API_BASE_URL, path,
+        api_key=ctx.api_key,
+        key_param="api-key",
+        params={k: v for k, v in request_params.items() if k != "api-key"},
     )
     if not isinstance(payload, dict):
         raise ValueError(f"Unexpected Winnipeg Transit payload for {path}: {type(payload)!r}")
-    _jsonl_write(family, cache_key, payload)
+    ctx.client.jsonl_write(API_CACHE_DIR, family, cache_params, payload)
     return payload
-
-
-def _cache_family(path: str) -> str:
-    base = path.replace(".json", "").split("/")[0]
-    return base.replace("-", "_")
-
-
-def _cache_key(path: str, params: dict[str, Any]) -> str:
-    filtered = []
-    for key, value in sorted(params.items()):
-        if key == "api-key":
-            continue
-        filtered.append(f"{key}={value}")
-    raw = path + "|" + "|".join(filtered)
-    return md5(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _jsonl_path(family: str) -> Path:
-    API_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return API_CACHE_DIR / f"{family}.jsonl"
-
-
-def _jsonl_read(family: str, cache_key: str) -> dict | None:
-    jsonl_path = _jsonl_path(family)
-    if not jsonl_path.exists():
-        return None
-    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        entry = json.loads(line)
-        if entry.get("key") == cache_key:
-            return entry.get("payload")
-    return None
-
-
-def _jsonl_write(family: str, cache_key: str, payload: dict) -> None:
-    jsonl_path = _jsonl_path(family)
-    entry = {"key": cache_key, "payload": payload}
-    with open(jsonl_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
 
 
 def refresh_service_status(ctx: _SourceContext, force_refresh: bool = False) -> pd.DataFrame:

@@ -1,172 +1,58 @@
-"""HTTP client with retry, caching, and authenticated API access."""
+"""Unified HTTP client for all PTN analysis data sources.
+
+Consolidates file downloads, JSON API calls, OAuth2 authentication,
+SODA-style pagination, response caching, and retry logic into one
+consistent interface used by every source module.
+"""
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import time
 from typing import Any
 
 import httpx
+from loguru import logger
 
 HTTP_TIMEOUT: float = 120.0
 HTTP_MAX_RETRIES: int = 3
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 
 
-# ---------------------------------------------------------------------------
-# Downloader — HTTP client with retry and file cache
-# ---------------------------------------------------------------------------
+class DataClient:
+    """Unified HTTP client with retry, caching, OAuth2, and pagination.
 
-
-class Downloader:
-    """Download HTTP resources with retry and optional caching."""
-
-    def request(
-        self,
-        url: str,
-        params: dict | None = None,
-        response_format: str = "json",
-        headers: dict | None = None,
-        cache_path: Path | None = None,
-        force_refresh: bool = False,
-        method: str = "GET",
-        files: dict | None = None,
-        timeout: float = HTTP_TIMEOUT,
-    ) -> Any:
-        """Fetch a resource and optionally cache it.
-
-        Args:
-            url: Absolute request URL.
-            params: Optional query parameters.
-            response_format: ``"json"``, ``"text"``, or ``"bytes"``.
-            headers: Optional HTTP headers.
-            cache_path: Optional cache file path.
-            force_refresh: Whether to bypass an existing cache file.
-            method: HTTP method.
-            files: Optional multipart payload.
-            timeout: Request timeout in seconds.
-
-        Returns:
-            Parsed JSON, decoded text, or raw bytes.
-        """
-        if cache_path is not None and cache_path.exists() and not force_refresh:
-            if cache_path.stat().st_size > 0:
-                return self._read_cache(cache_path, response_format)
-
-        request_headers = headers or {}
-        request_params = params
-        last_error: Exception | None = None
-
-        for attempt_index in range(HTTP_MAX_RETRIES):
-            is_last_attempt = attempt_index == HTTP_MAX_RETRIES - 1
-            try:
-                response = httpx.request(
-                    method,
-                    url,
-                    params=request_params,
-                    headers=request_headers,
-                    files=files,
-                    timeout=timeout,
-                    follow_redirects=True,
-                )
-                if response.status_code in RETRYABLE_STATUS_CODES and not is_last_attempt:
-                    delay_seconds = 2 ** attempt_index
-                    retry_after = response.headers.get("Retry-After")
-                    if retry_after:
-                        try:
-                            delay_seconds = min(float(retry_after), 60.0)
-                        except ValueError:
-                            delay_seconds = 2 ** attempt_index
-                    time.sleep(delay_seconds)
-                    continue
-                response.raise_for_status()
-                payload = self._parse_response(response, response_format)
-                if cache_path is not None:
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    self._write_cache(cache_path, payload, response_format)
-                return payload
-            except (
-                httpx.ConnectError,
-                httpx.ReadError,
-                httpx.RemoteProtocolError,
-                httpx.TimeoutException,
-            ) as exc:
-                last_error = exc
-                if is_last_attempt:
-                    break
-                time.sleep(2 ** attempt_index)
-
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError(f"Request failed: {url}")
-
-    def _parse_response(self, response: httpx.Response, response_format: str) -> Any:
-        """Parse one HTTP response payload."""
-        if response_format == "json":
-            return response.json()
-        if response_format == "text":
-            return response.text
-        if response_format == "bytes":
-            return response.content
-        raise ValueError(f"Unsupported response_format: {response_format!r}")
-
-    def _read_cache(self, cache_path: Path, response_format: str) -> Any:
-        """Read one cached payload."""
-        if response_format == "json":
-            return json.loads(cache_path.read_text(encoding="utf-8"))
-        if response_format == "text":
-            return cache_path.read_text(encoding="utf-8")
-        if response_format == "bytes":
-            return cache_path.read_bytes()
-        raise ValueError(f"Unsupported response_format: {response_format!r}")
-
-    def _write_cache(self, cache_path: Path, payload: Any, response_format: str) -> None:
-        """Write one payload to cache."""
-        part_path = cache_path.with_name(f"{cache_path.name}.part")
-        if part_path.exists():
-            part_path.unlink()
-        if response_format == "json":
-            part_path.write_text(json.dumps(payload), encoding="utf-8")
-        elif response_format == "text":
-            part_path.write_text(str(payload), encoding="utf-8")
-        elif response_format == "bytes":
-            part_path.write_bytes(payload)
-        else:
-            raise ValueError(f"Unsupported response_format: {response_format!r}")
-        part_path.replace(cache_path)
-
-
-# ---------------------------------------------------------------------------
-# ApiClient — authenticated HTTP client with throttle and JSONL cache
-# ---------------------------------------------------------------------------
-
-
-class ApiClient(Downloader):
-    """Authenticated API client with JSONL family cache and throttle.
+    Every source module (gtfs, open_data, census, transit_api, mobility_data)
+    should use a shared DataClient instance rather than raw httpx calls.
 
     Args:
-        api_key: API authentication key.
-        base_url: API base URL.
-        cache_dir: Directory for JSONL cache files.
-        throttle_rpm: Maximum requests per minute.
+        cache_dir: Base directory for response caching.
+        timeout: Default request timeout in seconds.
+        max_retries: Maximum retry attempts for transient failures.
+        throttle_rpm: Rate limit (requests per minute). 0 = unlimited.
     """
 
     def __init__(
         self,
-        api_key: str,
-        base_url: str,
-        cache_dir: Path,
-        throttle_rpm: int = 60,
+        cache_dir: Path | None = None,
+        timeout: float = HTTP_TIMEOUT,
+        max_retries: int = HTTP_MAX_RETRIES,
+        throttle_rpm: int = 0,
     ) -> None:
-        self.api_key = api_key
-        self.base_url = base_url
-        self.cache_dir = cache_dir
+        from ptn_analysis.context.config import CACHE_DATA_DIR
+
+        self._timeout = timeout
+        self._max_retries = max_retries
         self._throttle_rpm = throttle_rpm
         self._last_request_mono: float | None = None
+        self._cache_dir = cache_dir or CACHE_DATA_DIR
+        self._oauth_tokens: dict[str, tuple[str, datetime]] = {}
+
+    # ── Core request with retry ────────────────────────────────────────
 
     def _throttle(self) -> None:
-        """Enforce request rate limit."""
         if self._throttle_rpm <= 0:
             return
         min_interval = 60.0 / self._throttle_rpm
@@ -176,46 +62,226 @@ class ApiClient(Downloader):
                 time.sleep(min_interval - elapsed)
         self._last_request_mono = time.monotonic()
 
-    def fetch_json(self, endpoint: str, params: dict | None = None) -> dict:
-        """Fetch a JSON endpoint with throttle and auth.
+    def request(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        params: dict | None = None,
+        headers: dict | None = None,
+        json_body: dict | None = None,
+        response_format: str = "json",
+        cache_path: Path | None = None,
+        force_refresh: bool = False,
+        timeout: float | None = None,
+    ) -> Any:
+        """Execute an HTTP request with retry, throttle, and optional caching.
 
         Args:
-            endpoint: Relative endpoint path.
-            params: Optional query parameters.
+            url: Absolute request URL.
+            method: HTTP method (GET, POST, etc.).
+            params: Query parameters.
+            headers: HTTP headers.
+            json_body: JSON request body (for POST).
+            response_format: ``"json"``, ``"text"``, or ``"bytes"``.
+            cache_path: File path for response caching.
+            force_refresh: Bypass existing cache.
+            timeout: Override default timeout.
+
+        Returns:
+            Parsed response in the requested format.
+        """
+        if cache_path and cache_path.exists() and not force_refresh:
+            if cache_path.stat().st_size > 0:
+                return self._read_cache(cache_path, response_format)
+
+        self._throttle()
+        last_error: Exception | None = None
+
+        for attempt in range(self._max_retries):
+            is_last = attempt == self._max_retries - 1
+            try:
+                resp = httpx.request(
+                    method, url,
+                    params=params,
+                    headers=headers or {},
+                    json=json_body,
+                    timeout=timeout or self._timeout,
+                    follow_redirects=True,
+                )
+                if resp.status_code in RETRYABLE_STATUS_CODES and not is_last:
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = float(retry_after) if retry_after else 2 ** attempt
+                    time.sleep(min(delay, 60.0))
+                    continue
+                resp.raise_for_status()
+                payload = self._parse(resp, response_format)
+                if cache_path:
+                    self._write_cache(cache_path, payload, response_format)
+                return payload
+            except (
+                httpx.ConnectError, httpx.ReadError,
+                httpx.RemoteProtocolError, httpx.TimeoutException,
+            ) as exc:
+                last_error = exc
+                if not is_last:
+                    time.sleep(2 ** attempt)
+
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Request failed after {self._max_retries} attempts: {url}")
+
+    # ── Convenience methods ────────────────────────────────────────────
+
+    def get(self, url: str, *, params: dict | None = None,
+            headers: dict | None = None, **kwargs) -> Any:
+        """GET JSON response."""
+        return self.request(url, params=params, headers=headers, **kwargs)
+
+    def post(self, url: str, *, json_body: dict | None = None,
+             headers: dict | None = None, **kwargs) -> Any:
+        """POST with JSON body."""
+        return self.request(url, method="POST", json_body=json_body,
+                            headers=headers, **kwargs)
+
+    def download(self, url: str, dest: Path, *, force: bool = False,
+                 headers: dict | None = None) -> Path:
+        """Download a file. Skips if dest exists and force=False."""
+        if dest.exists() and not force:
+            return dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self.request(url, response_format="bytes", cache_path=dest,
+                     force_refresh=force, headers=headers)
+        return dest
+
+    # ── OAuth2 ─────────────────────────────────────────────────────────
+
+    def oauth2_token(self, provider: str, token_url: str,
+                     refresh_token: str) -> str:
+        """Get a valid OAuth2 access token, refreshing if expired.
+
+        Args:
+            provider: Identifier for token caching (e.g. ``"mobility_data"``).
+            token_url: Token endpoint URL.
+            refresh_token: Long-lived refresh token.
+
+        Returns:
+            Valid access token string.
+        """
+        cached = self._oauth_tokens.get(provider)
+        if cached:
+            token, expiry = cached
+            if datetime.now(timezone.utc) < expiry:
+                return token
+
+        data = self.post(token_url, json_body={"refresh_token": refresh_token})
+        access_token = data["access_token"]
+        expiry_str = data.get("expiration_datetime_utc", "")
+        if expiry_str:
+            expiry = datetime.fromisoformat(expiry_str.rstrip("Z")).replace(
+                tzinfo=timezone.utc
+            )
+        else:
+            expiry = datetime.now(timezone.utc).replace(
+                hour=datetime.now(timezone.utc).hour + 1
+            )
+        self._oauth_tokens[provider] = (access_token, expiry)
+        return access_token
+
+    def bearer_headers(self, token: str) -> dict[str, str]:
+        """Build Authorization: Bearer header dict."""
+        return {"Authorization": f"Bearer {token}"}
+
+    # ── Paginated fetch (SODA API style) ───────────────────────────────
+
+    def get_all_pages(
+        self,
+        url: str,
+        *,
+        params: dict | None = None,
+        headers: dict | None = None,
+        page_size: int = 50_000,
+        offset_key: str = "$offset",
+        limit_key: str = "$limit",
+    ) -> list[dict]:
+        """Fetch all pages from a paginated JSON API.
+
+        Args:
+            url: Base URL.
+            params: Base query parameters (merged with pagination params).
+            headers: HTTP headers.
+            page_size: Records per page.
+            offset_key: Pagination offset parameter name.
+            limit_key: Pagination limit parameter name.
+
+        Returns:
+            Concatenated list of all records.
+        """
+        all_records: list[dict] = []
+        offset = 0
+        while True:
+            page_params = {**(params or {}), limit_key: page_size, offset_key: offset}
+            page = self.get(url, params=page_params, headers=headers)
+            if not page:
+                break
+            all_records.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+            logger.debug(f"Fetched {len(all_records)} records from {url}")
+        return all_records
+
+    # ── Cached JSON (with TTL) ─────────────────────────────────────────
+
+    def cached_get(self, cache_key: str, url: str, *,
+                   ttl_hours: float = 24, **kwargs) -> Any:
+        """GET with file-based JSON cache and TTL.
+
+        Args:
+            cache_key: Relative cache file path (without extension).
+            url: Request URL.
+            ttl_hours: Cache time-to-live in hours.
+            **kwargs: Additional keyword arguments passed to ``get()``.
+
+        Returns:
+            Cached or fresh JSON response.
+        """
+        cache_path = self._cache_dir / f"{cache_key}.json"
+        if cache_path.exists():
+            age_hours = (time.time() - cache_path.stat().st_mtime) / 3600
+            if age_hours < ttl_hours:
+                return json.loads(cache_path.read_text(encoding="utf-8"))
+        return self.get(url, cache_path=cache_path, force_refresh=True, **kwargs)
+
+    # ── API-key authenticated fetch ────────────────────────────────────
+
+    def api_fetch(self, base_url: str, endpoint: str, *,
+                  api_key: str = "", key_param: str = "api-key",
+                  params: dict | None = None) -> Any:
+        """Fetch from an API-key-authenticated endpoint.
+
+        Args:
+            base_url: API base URL.
+            endpoint: Relative path.
+            api_key: API key value.
+            key_param: Query parameter name for the key.
+            params: Additional query parameters.
 
         Returns:
             Parsed JSON response.
         """
-        self._throttle()
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        url = f"{base_url}/{endpoint.lstrip('/')}"
         request_params = dict(params or {})
-        if self.api_key:
-            request_params["api-key"] = self.api_key
-        return self.request(url, params=request_params, response_format="json")
+        if api_key:
+            request_params[key_param] = api_key
+        return self.get(url, params=request_params)
 
-    def _jsonl_path(self, family: str) -> Path:
-        """Return the JSONL cache path for an endpoint family.
+    # ── JSONL family cache (for Transit API v4) ────────────────────────
 
-        Args:
-            family: Endpoint family name.
-
-        Returns:
-            Path to the JSONL cache file.
-        """
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        return self.cache_dir / f"{family}.jsonl"
-
-    def _jsonl_read(self, family: str, params: dict) -> dict | None:
-        """Read a cached JSONL entry matching params.
-
-        Args:
-            family: Endpoint family name.
-            params: Request parameters to match.
-
-        Returns:
-            Cached payload or None if not found.
-        """
-        jsonl_path = self._jsonl_path(family)
+    def jsonl_read(self, cache_dir: Path, family: str,
+                   params: dict) -> dict | None:
+        """Read a cached JSONL entry matching params."""
+        jsonl_path = cache_dir / f"{family}.jsonl"
         if not jsonl_path.exists():
             return None
         frozen_key = json.dumps(params, sort_keys=True)
@@ -227,15 +293,47 @@ class ApiClient(Downloader):
                 return entry.get("payload")
         return None
 
-    def _jsonl_write(self, family: str, params: dict, payload: dict) -> None:
-        """Append a cache entry to the JSONL file.
-
-        Args:
-            family: Endpoint family name.
-            params: Request parameters.
-            payload: Response payload.
-        """
-        jsonl_path = self._jsonl_path(family)
+    def jsonl_write(self, cache_dir: Path, family: str,
+                    params: dict, payload: dict) -> None:
+        """Append a cache entry to a JSONL file."""
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        jsonl_path = cache_dir / f"{family}.jsonl"
         entry = {"params": params, "payload": payload}
-        with open(jsonl_path, "a", encoding="utf-8") as file_handle:
-            file_handle.write(json.dumps(entry) + "\n")
+        with open(jsonl_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+
+    # ── Internal helpers ───────────────────────────────────────────────
+
+    @staticmethod
+    def _parse(resp: httpx.Response, fmt: str) -> Any:
+        if fmt == "json":
+            return resp.json()
+        if fmt == "text":
+            return resp.text
+        if fmt == "bytes":
+            return resp.content
+        raise ValueError(f"Unsupported format: {fmt!r}")
+
+    @staticmethod
+    def _read_cache(path: Path, fmt: str) -> Any:
+        if fmt == "json":
+            return json.loads(path.read_text(encoding="utf-8"))
+        if fmt == "text":
+            return path.read_text(encoding="utf-8")
+        if fmt == "bytes":
+            return path.read_bytes()
+        raise ValueError(f"Unsupported format: {fmt!r}")
+
+    @staticmethod
+    def _write_cache(path: Path, payload: Any, fmt: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_name(f"{path.name}.part")
+        if fmt == "json":
+            part.write_text(json.dumps(payload, default=str), encoding="utf-8")
+        elif fmt == "text":
+            part.write_text(str(payload), encoding="utf-8")
+        elif fmt == "bytes":
+            part.write_bytes(payload)
+        else:
+            raise ValueError(f"Unsupported format: {fmt!r}")
+        part.replace(path)

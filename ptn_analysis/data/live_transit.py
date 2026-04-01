@@ -586,11 +586,12 @@ def refresh_live_transit_bootstrap(
     except Exception as exc:
         logger.warning(f"Skipping transit service status refresh: {exc}")
         status_frame = pd.DataFrame()
-    db_instance.load_table(
-        db_instance.transit_table_name("service_status", city_key),
-        status_frame,
-        mode="replace",
-    )
+    if not status_frame.empty:
+        db_instance.load_table(
+            db_instance.transit_table_name("service_status", city_key),
+            status_frame,
+            mode="replace",
+        )
     results["transit_service_status"] = len(status_frame)
 
     try:
@@ -598,11 +599,12 @@ def refresh_live_transit_bootstrap(
     except Exception as exc:
         logger.warning(f"Skipping transit service advisories refresh: {exc}")
         advisory_frame = pd.DataFrame()
-    db_instance.load_table(
-        db_instance.transit_table_name("service_advisories", city_key),
-        advisory_frame,
-        mode="replace",
-    )
+    if not advisory_frame.empty:
+        db_instance.load_table(
+            db_instance.transit_table_name("service_advisories", city_key),
+            advisory_frame,
+            mode="replace",
+        )
     results["transit_service_advisories"] = len(advisory_frame)
 
     effective_dates = ["2025-04-13", PTN_LAUNCH_DATE, "2025-08-31", date.today().isoformat()]

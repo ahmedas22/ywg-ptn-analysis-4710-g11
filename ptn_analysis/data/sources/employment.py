@@ -18,9 +18,9 @@ from ptn_analysis.context.config import (
     STATCAN_WDS_URL,
 )
 from ptn_analysis.context.db import TransitDB
-from ptn_analysis.context.http import Downloader
+from ptn_analysis.context.http import DataClient
 
-_downloader = Downloader()
+_downloader = DataClient()
 
 SIZE_RANGE_WEIGHTS = {
     "Without employees": 0.0,

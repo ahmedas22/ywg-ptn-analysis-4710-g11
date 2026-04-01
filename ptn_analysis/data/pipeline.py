@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 import re
@@ -13,8 +14,14 @@ import pandas as pd
 from pandas.errors import PerformanceWarning
 from rich import box
 from rich.console import Console
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from ptn_analysis.context.config import (
@@ -25,7 +32,6 @@ from ptn_analysis.context.config import (
     SERVICE_DAY_END,
     SERVICE_DAY_START,
     WINNIPEG_TRANSIT_API_KEY,
-    WPG_BOUNDS,
     normalize_gtfs_date,
 )
 from ptn_analysis.context.db import TransitDB
@@ -43,8 +49,8 @@ from ptn_analysis.data.live_transit import (
 from ptn_analysis.data.sources import employment as employment_mod
 from ptn_analysis.data.sources import gtfs as gtfs_mod
 from ptn_analysis.data.sources import open_data as open_data_mod
-from ptn_analysis.data.sources.census import load_dissemination_areas
 from ptn_analysis.data.sources import transit_api
+from ptn_analysis.data.sources.census import load_dissemination_areas
 
 console = Console()
 _SAFE_SQL_VALUE_RE = re.compile(r"^[a-zA-Z0-9_.:-]+$")
@@ -79,7 +85,7 @@ class DatasetPipeline:
             Row counts keyed by table name.
         """
         self._run_sql_script("schema.sql")
-        gtfs_mod.download_current(self.city_key)
+        gtfs_mod.resolve_and_download("current", self.city_key)
         return gtfs_mod.load_current(self.city_key, self.db)
 
     def refresh_boundaries(self) -> dict[str, int]:
@@ -91,28 +97,16 @@ class DatasetPipeline:
         return open_data_mod.load_boundaries(self.city_key, self.db)
 
     def refresh_open_data(self) -> dict[str, int]:
-        """Load all configured open-data datasets with per-dataset progress.
-
-        Returns:
-            Row counts keyed by table name.
-        """
-        return open_data_mod.load_all(
-            self.city_key, self.db,
-            progress_callback=self.update_progress,
-        )
-
-    def refresh_open_data_phased(self) -> dict[str, int]:
-        """Load open-data datasets with individual sub-task progress bars.
-
-        Downloads all datasets in parallel threads, then loads each into
-        DuckDB. Each dataset gets its own row in the progress panel.
+        """Load open-data datasets with parallel download and progress bars.
 
         Returns:
             Row counts keyed by table name.
         """
         from ptn_analysis.data.sources.open_data import (
-            _SourceContext, get_config, _prepare_dataset_cache,
             _load_prepared_dataset,
+            _prepare_dataset_cache,
+            _SourceContext,
+            get_config,
         )
 
         ctx = _SourceContext(self.city_key)
@@ -354,32 +348,59 @@ class DatasetPipeline:
         )
         return results
 
-    def load_pre_ptn_archives(self) -> dict[str, int]:
-        """Load pre-PTN GTFS archives and metrics.
+    def load_historical_feeds(self, era: str | None = None) -> dict[str, int]:
+        """Load historical GTFS archive feeds into raw and metrics tables.
 
-        Loads ``PRE_PTN_ARCHIVE_COUNT`` most recent pre-PTN archives
-        using their date as feed_id.
+        Args:
+            era: ``"pre_ptn"``, ``"post_ptn"``, or None for both.
 
         Returns:
             Route-stat counts keyed by archive date.
         """
-        from ptn_analysis.context.config import PRE_PTN_ARCHIVE_COUNT
-
         results: dict[str, int] = {}
-        pre_ptn_dates = [d for d in gtfs_mod.available_archives() if gtfs_mod.is_pre_ptn(d)]
-        pre_ptn_dates = pre_ptn_dates[:PRE_PTN_ARCHIVE_COUNT]
-        if not pre_ptn_dates:
-            return results
 
-        for i, archive_date in enumerate(pre_ptn_dates, 1):
-            self.update_progress(f"feed {i}/{len(pre_ptn_dates)}: {archive_date}")
-            feed = gtfs_mod.read_feed(gtfs_mod.download_archive(archive_date))
-            gtfs_mod.load_archive(self.city_key, self.db, archive_date, archive_date, feed)
-            metric_results = self._transform_route_and_stop_metrics(feed, archive_date)
-            results[archive_date] = metric_results.get("gtfs_route_stats", 0)
+        # Use manifest entries instead of HTML-scraped archives
+        manifest_entries = gtfs_mod.manifest_feeds(self.city_key, era=era)
+        if not manifest_entries:
+            # Fall back to legacy archive discovery
+            logger.warning("No manifest entries found, using legacy archive discovery")
+            from ptn_analysis.context.config import PRE_PTN_ARCHIVE_COUNT
+            all_dates = gtfs_mod.available_archives()
+            if era == "pre_ptn":
+                dates = [d for d in all_dates if gtfs_mod.is_pre_ptn(d)][:PRE_PTN_ARCHIVE_COUNT]
+            elif era == "post_ptn":
+                dates = [d for d in all_dates if d >= PTN_LAUNCH_DATE]
+            else:
+                dates = all_dates
+            manifest_entries = [{"snapshot_id": d} for d in dates]
 
-        self.build_feed_registry()
+        # Filter out "current" — that's handled by refresh_gtfs()
+        manifest_entries = [e for e in manifest_entries if e["snapshot_id"] != "current"]
+
+        for i, entry in enumerate(manifest_entries, 1):
+            sid = entry["snapshot_id"]
+            self.update_progress(f"feed {i}/{len(manifest_entries)}: {sid}")
+            try:
+                zip_path = gtfs_mod.resolve_and_download(sid, self.city_key)
+                feed = gtfs_mod.read_feed(zip_path)
+                gtfs_mod.load_archive(self.city_key, self.db, sid, sid, feed)
+                metric_results = self._transform_route_and_stop_metrics(feed, sid)
+                results[sid] = metric_results.get("gtfs_route_stats", 0)
+            except Exception as exc:
+                logger.warning(f"Failed to load feed {sid}: {exc}")
+                results[sid] = 0
+
+        if era in (None, "pre_ptn"):
+            self.build_feed_registry()
         return results
+
+    def load_pre_ptn_archives(self) -> dict[str, int]:
+        """Load pre-PTN feeds from manifest."""
+        return self.load_historical_feeds(era="pre_ptn")
+
+    def load_post_ptn_archives(self) -> dict[str, int]:
+        """Load post-PTN feeds from manifest."""
+        return self.load_historical_feeds(era="post_ptn")
 
     def _current_feed_start_date(self) -> str | None:
         """Read the start date of the current GTFS feed from feed_info."""
@@ -394,28 +415,6 @@ class DatasetPipeline:
             return None
         return normalize_gtfs_date(str(row))
 
-    def load_post_ptn_archives(self) -> dict[str, int]:
-        """Load post-PTN archive feeds into raw and metrics tables.
-
-        Skips the archive whose date matches the current feed to avoid
-        duplicating data.
-
-        Returns:
-            Loaded archive counts keyed by feed id.
-        """
-        results: dict[str, int] = {}
-        current_date = self._current_feed_start_date()
-        archive_dates = [d for d in gtfs_mod.available_archives() if d >= PTN_LAUNCH_DATE]
-        if current_date and current_date in archive_dates:
-            logger.info(f"Skipping archive {current_date} (same as current feed)")
-            archive_dates = [d for d in archive_dates if d != current_date]
-        for i, archive_date in enumerate(archive_dates, 1):
-            self.update_progress(f"feed {i}/{len(archive_dates)}: {archive_date}")
-            feed = gtfs_mod.read_feed(gtfs_mod.download_archive(archive_date))
-            gtfs_mod.load_archive(self.city_key, self.db, archive_date, archive_date, feed)
-            metric_results = self._transform_route_and_stop_metrics(feed, archive_date)
-            results[archive_date] = metric_results.get("gtfs_route_stats", 0)
-        return results
 
     def build_service_table(self, target_date: str) -> None:
         """Materialize daily service rows for one date.
@@ -523,7 +522,7 @@ class DatasetPipeline:
 
             # Open Data — per-dataset sub-task display (threaded downloads)
             console.print("  [dim]Open Data[/]")
-            od_results = self.refresh_open_data_phased()
+            od_results = self.refresh_open_data()
             od_summary = self._format_result_summary(od_results)
             console.print(f"  [green]✔[/] Open Data{od_summary}")
 
@@ -537,7 +536,6 @@ class DatasetPipeline:
             self._run_step("Derived tables", self.build_derived_tables)
             self._run_step("Accessibility (r5py)", self.build_accessibility_tables)
             self._run_step("Live transit", lambda: self.refresh_live_transit(force_refresh=force_refresh))
-            self._run_step("H3 hexagonal metrics", self.build_h3_metrics)
 
             # ── Phase C: Export ──────────────────────────────────────────
             console.print()
@@ -646,196 +644,9 @@ class DatasetPipeline:
             logger.warning(f"Phase had {len(errors)} failed step(s): {', '.join(errors)}")
 
     def build_accessibility_tables(self) -> dict[str, int]:
-        """Build r5py travel time matrices and isochrone tables.
-
-        Requires Java 21 and an OSM PBF file. Degrades gracefully when
-        r5py is unavailable (no Java) or the OSM PBF is missing.
-
-        Returns:
-            Row counts keyed by logical table name, or empty dict if skipped.
-        """
-        results: dict[str, int] = {}
-
-        try:
-            from ptn_analysis.data.sources.routing import (
-                FeedAssetRegistry,
-                build_isochrones,
-                build_transport_network,
-                build_travel_time_matrix,
-                download_osm_pbf,
-            )
-        except ImportError as exc:
-            logger.warning(f"Skipping accessibility tables: r5py not installed ({exc})")
-            return results
-
-        from ptn_analysis.context.config import (
-            DEFAULT_ANALYSIS_DATE,
-            FEED_ID_CURRENT,
-            GTFS_ARCHIVE_DIR,
-            GTFS_ZIP_PATH,
-            JOBS_ACCESS_MAX_TRAVEL_MINUTES,
-            R5_ISOCHRONE_MINUTES,
-            R5_PERCENTILES,
-            WPG_BOUNDS,
-        )
-
-        # Download OSM PBF if missing
-        try:
-            osm_path = download_osm_pbf()
-        except Exception as exc:
-            logger.warning(f"OSM PBF download failed — skipping accessibility tables: {exc}")
-            return results
-
-        if not osm_path.exists():
-            logger.warning("OSM PBF not found — skipping accessibility tables")
-            return results
-
-        registry = FeedAssetRegistry(
-            db=self.db,
-            city_key=self.city_key,
-            gtfs_archive_dir=GTFS_ARCHIVE_DIR,
-            current_gtfs_path=GTFS_ZIP_PATH,
-        )
-
-        # Build one transport network per feed that has a GTFS zip
-        # Use the most recent pre-PTN date (not alias) for r5py
-        pre_ptn_date = gtfs_mod.pick_archive(pre_ptn=True)
-        r5py_feeds = [FEED_ID_CURRENT]
-        if pre_ptn_date:
-            r5py_feeds.append(pre_ptn_date)
-        for feed_id in r5py_feeds:
-            # Sanitize feed_id for table names (hyphens not allowed)
-            safe_id = feed_id.replace("-", "_")
-            # Skip if tables already populated (r5py is expensive)
-            walk_table = self.db.table_name(f"walk_matrix_{safe_id}", self.city_key)
-            transit_table = self.db.table_name(f"transit_matrix_{safe_id}", self.city_key)
-            if self.db.relation_exists(walk_table) and self.db.relation_exists(transit_table):
-                walk_n = self.db.count(walk_table) or 0
-                transit_n = self.db.count(transit_table) or 0
-                if walk_n > 0 and transit_n > 0:
-                    logger.info(f"r5py tables cached for {feed_id} (walk={walk_n:,}, transit={transit_n:,}) — skipping")
-                    results[f"walk_matrix_{safe_id}"] = walk_n
-                    results[f"transit_matrix_{safe_id}"] = transit_n
-                    continue
-
-            gtfs_path = registry.resolve(feed_id)
-            if gtfs_path is None:
-                logger.info(f"No GTFS zip for {feed_id} — skipping r5py tables")
-                continue
-
-            try:
-                network = build_transport_network(osm_path, [gtfs_path])
-            except Exception as exc:
-                logger.warning(f"r5py network build failed for {feed_id}: {exc}")
-                continue
-
-            # Load stop centroids as origins/destinations
-            stops_table = self.db.table_name("stops", self.city_key)
-            stops_gdf = self.db.query(
-                f"""
-                SELECT stop_id AS id, stop_lat, stop_lon
-                FROM {stops_table}
-                WHERE feed_id = :feed_id
-                """,
-                {"feed_id": feed_id},
-            )
-            if stops_gdf.empty:
-                continue
-
-            import geopandas as _gpd
-            from shapely.geometry import Point as _Point
-
-            stops_gdf = _gpd.GeoDataFrame(
-                stops_gdf,
-                geometry=[_Point(lon, lat) for lon, lat in zip(stops_gdf["stop_lon"], stops_gdf["stop_lat"])],
-                crs="EPSG:4326",
-            )
-            stops_gdf = stops_gdf[["id", "geometry"]]
-
-            # Pick a Wednesday within this feed's calendar range
-            cal_table = self.db.table_name("calendar", self.city_key)
-            cal_df = self.db.query(
-                f"SELECT MIN(start_date) AS sd, MAX(end_date) AS ed "
-                f"FROM {cal_table} WHERE feed_id = :fid",
-                {"fid": feed_id},
-            )
-            if cal_df.empty or pd.isna(cal_df["sd"].iloc[0]):
-                analysis_date = DEFAULT_ANALYSIS_DATE
-            else:
-                import datetime as _dt
-                cal_start = pd.to_datetime(str(cal_df["sd"].iloc[0]))
-                cal_end = pd.to_datetime(str(cal_df["ed"].iloc[0]))
-                mid = cal_start + (cal_end - cal_start) / 2
-                # Shift to nearest Wednesday (weekday=2)
-                days_to_wed = (2 - mid.weekday()) % 7
-                wed = mid + _dt.timedelta(days=days_to_wed)
-                if wed > cal_end:
-                    wed = wed - _dt.timedelta(weeks=1)
-                analysis_date = wed.strftime("%Y-%m-%d")
-            logger.info(f"r5py analysis date for {feed_id}: {analysis_date}")
-
-            # Walk-only matrix
-            try:
-                walk_matrix = build_travel_time_matrix(
-                    network, stops_gdf, stops_gdf,
-                    modes=["WALK"],
-                    departure_date=analysis_date,
-                    max_minutes=JOBS_ACCESS_MAX_TRAVEL_MINUTES,
-                    percentiles=R5_PERCENTILES,
-                )
-                walk_table = self.db.table_name(f"walk_matrix_{safe_id}", self.city_key)
-                self.db.load_table(walk_table, walk_matrix, mode="replace")
-                results[f"walk_matrix_{safe_id}"] = len(walk_matrix)
-            except Exception as exc:
-                logger.warning(f"Walk matrix failed for {feed_id}: {exc}")
-
-            # Transit+walk matrix
-            try:
-                transit_matrix = build_travel_time_matrix(
-                    network, stops_gdf, stops_gdf,
-                    modes=["TRANSIT", "WALK"],
-                    departure_date=analysis_date,
-                    max_minutes=JOBS_ACCESS_MAX_TRAVEL_MINUTES,
-                    percentiles=R5_PERCENTILES,
-                )
-                transit_table = self.db.table_name(f"transit_matrix_{safe_id}", self.city_key)
-                self.db.load_table(transit_table, transit_matrix, mode="replace")
-                results[f"transit_matrix_{safe_id}"] = len(transit_matrix)
-            except Exception as exc:
-                logger.warning(f"Transit matrix failed for {feed_id}: {exc}")
-
-            # Isochrones for hub stops (top 20 by connection count)
-            try:
-                counts_table = self.db.table_name("stop_connection_counts", self.city_key)
-                if self.db.relation_exists(counts_table):
-                    hub_ids = self.db.query(
-                        f"""
-                        SELECT from_stop_id AS id
-                        FROM {counts_table}
-                        WHERE feed_id = :feed_id
-                        GROUP BY from_stop_id
-                        ORDER BY SUM(frequency) DESC
-                        LIMIT 20
-                        """,
-                        {"feed_id": feed_id},
-                    )["id"].tolist()
-
-                    hub_gdf = stops_gdf[stops_gdf["id"].isin(hub_ids)]
-                    if not hub_gdf.empty:
-                        isochrones = build_isochrones(
-                            network, hub_gdf,
-                            modes=["TRANSIT", "WALK"],
-                            departure_date=analysis_date,
-                            cutoffs=R5_ISOCHRONE_MINUTES,
-                            bounds=WPG_BOUNDS,
-                        )
-                        iso_table = self.db.table_name(f"isochrones_{safe_id}", self.city_key)
-                        self.db.load_table(iso_table, isochrones, mode="replace")
-                        results[f"isochrones_{safe_id}"] = len(isochrones)
-            except Exception as exc:
-                logger.warning(f"Isochrone build failed for {feed_id}: {exc}")
-
-        return results
+        """Build r5py travel time matrices (delegated to builders module)."""
+        from ptn_analysis.data.builders import build_accessibility_tables
+        return build_accessibility_tables(self.db, self.city_key, self.update_progress)
 
     def build_feed_registry(self) -> dict[str, int]:
         """Build the feed regime registry from DB metadata.
@@ -852,7 +663,7 @@ class DatasetPipeline:
             return {"feed_regime_registry": 0}
 
         feed_ids = self.db.query(
-            f"SELECT DISTINCT feed_id FROM {route_stats_table} ORDER BY feed_id"
+            f"SELECT DISTINCT feed_id FROM {route_stats_table} WHERE feed_id NOT LIKE 'avg_%' ORDER BY feed_id"
         )["feed_id"].tolist()
 
         rows = []
@@ -883,147 +694,9 @@ class DatasetPipeline:
         return {"feed_regime_registry": len(frame)}
 
     def _build_era_aggregates(self) -> None:
-        """Insert era-averaged synthetic feeds into metric tables.
-
-        Creates ``avg_pre_ptn`` and ``avg_post_ptn`` feed_ids by averaging
-        route-level and stop-level metrics across all feeds in each era.
-        Also inserts averaged rows into neighbourhood density and jobs
-        access tables. This lets existing comparison methods work with
-        era-level baselines via ``baseline_feed_id='avg_pre_ptn'``.
-        """
-        registry_table = self.db.table_name("feed_regime_registry", self.city_key)
-        if not self.db.relation_exists(registry_table):
-            return
-
-        for era, synthetic_id in [("pre_ptn", "avg_pre_ptn"), ("post_ptn", "avg_post_ptn")]:
-            era_feeds = self.db.query(
-                f"SELECT feed_id FROM {registry_table} "
-                f"WHERE era_label = :era AND feed_id != 'current'",
-                {"era": era},
-            )["feed_id"].tolist()
-            if len(era_feeds) < 1:
-                continue
-
-            feeds_sql = ", ".join(f"'{f}'" for f in era_feeds)
-
-            # Route stats: average numeric columns by route_id + direction_id
-            route_table = self.db.table_name("gtfs_route_stats", self.city_key)
-            if self.db.relation_exists(route_table):
-                self.db.execute(
-                    f"DELETE FROM {route_table} WHERE feed_id = :fid",
-                    {"fid": synthetic_id},
-                )
-                self.db.execute_native(
-                    f"""
-                    INSERT INTO {route_table}
-                    (feed_id, date, route_id, route_short_name, route_type,
-                     num_trips, num_trip_starts, num_trip_ends, num_stop_patterns,
-                     is_loop, start_time, end_time,
-                     max_headway, min_headway, mean_headway,
-                     peak_num_trips, peak_start_time, peak_end_time,
-                     service_distance, service_duration, service_speed,
-                     mean_trip_distance, mean_trip_duration, direction_id)
-                    SELECT
-                        '{synthetic_id}',
-                        MAX(date),
-                        route_id, MAX(route_short_name), MAX(route_type),
-                        AVG(num_trips), AVG(num_trip_starts), AVG(num_trip_ends),
-                        AVG(num_stop_patterns),
-                        MAX(is_loop), MIN(start_time), MAX(end_time),
-                        AVG(max_headway), AVG(min_headway), AVG(mean_headway),
-                        AVG(peak_num_trips), MIN(peak_start_time), MAX(peak_end_time),
-                        AVG(service_distance), AVG(service_duration), AVG(service_speed),
-                        AVG(mean_trip_distance), AVG(mean_trip_duration), direction_id
-                    FROM {route_table}
-                    WHERE feed_id IN ({feeds_sql})
-                    GROUP BY route_id, direction_id
-                    """
-                )
-
-            # Stop stats: average numeric columns by stop_id + direction_id
-            stop_table = self.db.table_name("gtfs_stop_stats", self.city_key)
-            if self.db.relation_exists(stop_table):
-                self.db.execute(
-                    f"DELETE FROM {stop_table} WHERE feed_id = :fid",
-                    {"fid": synthetic_id},
-                )
-                self.db.execute_native(
-                    f"""
-                    INSERT INTO {stop_table}
-                    (feed_id, date, stop_id, num_trips, num_routes,
-                     max_headway, min_headway, mean_headway,
-                     start_time, end_time, direction_id)
-                    SELECT
-                        '{synthetic_id}',
-                        MAX(date),
-                        stop_id,
-                        AVG(num_trips), AVG(num_routes),
-                        AVG(max_headway), AVG(min_headway), AVG(mean_headway),
-                        MIN(start_time), MAX(end_time), direction_id
-                    FROM {stop_table}
-                    WHERE feed_id IN ({feeds_sql})
-                    GROUP BY stop_id, direction_id
-                    """
-                )
-
-            # Neighbourhood density: average by neighbourhood
-            density_table = self.db.table_name("neighbourhood_stop_count_density", self.city_key)
-            if self.db.relation_exists(density_table):
-                self.db.execute(
-                    f"DELETE FROM {density_table} WHERE feed_id = :fid",
-                    {"fid": synthetic_id},
-                )
-                self.db.execute_native(
-                    f"""
-                    INSERT INTO {density_table}
-                    SELECT
-                        '{synthetic_id}' AS feed_id,
-                        neighbourhood_id, neighbourhood, area_km2,
-                        AVG(stop_count) AS stop_count,
-                        AVG(stop_density_per_km2) AS stop_density_per_km2
-                    FROM {density_table}
-                    WHERE feed_id IN ({feeds_sql})
-                    GROUP BY neighbourhood_id, neighbourhood, area_km2
-                    """
-                )
-
-            # Jobs access: average by neighbourhood
-            jobs_table = self.db.table_name("neighbourhood_jobs_access_metrics", self.city_key)
-            if self.db.relation_exists(jobs_table):
-                self.db.execute(
-                    f"DELETE FROM {jobs_table} WHERE feed_id = :fid",
-                    {"fid": synthetic_id},
-                )
-                self.db.execute_native(
-                    f"""
-                    INSERT INTO {jobs_table}
-                    (feed_id, neighbourhood_id, neighbourhood, area_km2,
-                     stop_count, stop_density_per_km2,
-                     jobs_proxy_score, establishment_count, large_employer_count,
-                     jobs_proxy_log, jobs_access_score)
-                    SELECT
-                        '{synthetic_id}',
-                        neighbourhood_id, neighbourhood, MAX(area_km2),
-                        AVG(stop_count), AVG(stop_density_per_km2),
-                        AVG(jobs_proxy_score), AVG(establishment_count),
-                        AVG(large_employer_count),
-                        AVG(jobs_proxy_log), AVG(jobs_access_score)
-                    FROM {jobs_table}
-                    WHERE feed_id IN ({feeds_sql})
-                    GROUP BY neighbourhood_id, neighbourhood
-                    """
-                )
-
-        # Register the synthetic feeds
-        self.db.execute_native(
-            f"""
-            INSERT INTO {registry_table} (feed_id, feed_label, era_label, sort_order, is_current)
-            VALUES
-                ('avg_pre_ptn', 'Pre-PTN average', 'pre_ptn', 0, false),
-                ('avg_post_ptn', 'Post-PTN average', 'post_ptn', 0, false)
-            """
-        )
-        logger.info("Built era-aggregate feeds: avg_pre_ptn, avg_post_ptn")
+        """Build synthetic era-average feeds (delegated to builders module)."""
+        from ptn_analysis.data.builders import build_era_aggregates
+        build_era_aggregates(self.db, self.city_key)
 
     def build_h3_metrics(self) -> dict[str, int]:
         """Build H3-based stop service and live delay metrics.
@@ -1094,94 +767,45 @@ class DatasetPipeline:
         return results
 
     def _transform_connections(self) -> None:
-        """Build stop-to-stop connection tables using city2graph.
-
-        Uses city2graph's calendar-aware GTFS graph builder for each loaded
-        feed. Output table ``ywg_stop_connection_counts`` keeps the same
-        schema so downstream consumers are unaffected.
-        """
-        import city2graph as c2g
-
-        ck = self.city_key
-        counts_table = self.db.table_name("stop_connection_counts", ck)
-        connections_table = self.db.table_name("stop_connections", ck)
-
-        self.db.execute(f"DROP TABLE IF EXISTS {connections_table}")
-
-        feed_ids_df = self.db.query(
-            f"SELECT DISTINCT feed_id FROM {self.db.table_name('trips', ck)} ORDER BY feed_id"
-        )
-        if feed_ids_df.empty:
-            logger.warning("No feeds loaded — skipping connection build")
-            return
-
-        from ptn_analysis.context.config import GTFS_ARCHIVE_DIR, GTFS_ZIP_PATH
-        from ptn_analysis.data.sources.routing import FeedAssetRegistry
-
-        registry = FeedAssetRegistry(
-            db=self.db,
-            city_key=ck,
-            gtfs_archive_dir=GTFS_ARCHIVE_DIR,
-            current_gtfs_path=GTFS_ZIP_PATH,
-        )
-
-        all_frames = []
-        for feed_id in feed_ids_df["feed_id"].tolist():
-            gtfs_path = registry.resolve(feed_id)
-            if gtfs_path is None:
-                raise FileNotFoundError(
-                    f"No GTFS zip for feed_id={feed_id}. "
-                    f"Run `make data` to download all feeds."
-                )
-
-            logger.info(f"city2graph: building edges for feed_id={feed_id}")
-            gtfs = c2g.load_gtfs(str(gtfs_path))
-
-            cal_df = self.db.query(
-                f"SELECT MIN(start_date) AS sd, MAX(end_date) AS ed "
-                f"FROM {self.db.table_name('calendar', ck)} WHERE feed_id = :fid",
-                {"fid": feed_id},
-            )
-            if cal_df.empty or pd.isna(cal_df["sd"].iloc[0]) or pd.isna(cal_df["ed"].iloc[0]):
-                raise ValueError(
-                    f"No calendar dates for feed_id={feed_id}. GTFS may be corrupt."
-                )
-
-            cal_start = str(cal_df["sd"].iloc[0]).replace("-", "")
-            cal_end = str(cal_df["ed"].iloc[0]).replace("-", "")
-
-            nodes_gdf, edges_gdf = c2g.travel_summary_graph(
-                gtfs, calendar_start=cal_start, calendar_end=cal_end,
-            )
-
-            if edges_gdf.empty:
-                raise RuntimeError(
-                    f"city2graph returned 0 edges for feed_id={feed_id}. "
-                    f"Check GTFS calendar range [{cal_start}..{cal_end}]."
-                )
-
-            # Use city2graph native schema: from_stop_id, to_stop_id,
-            # travel_time_sec, frequency (+ geometry dropped for DuckDB)
-            edges_gdf = edges_gdf.reset_index()
-            edge_df = pd.DataFrame({
-                "feed_id": feed_id,
-                "from_stop_id": edges_gdf["from_stop_id"].astype(str),
-                "to_stop_id": edges_gdf["to_stop_id"].astype(str),
-                "travel_time_sec": edges_gdf["travel_time_sec"],
-                "frequency": edges_gdf["frequency"],
-            })
-            all_frames.append(edge_df)
-            logger.info(f"city2graph: {len(edge_df)} edges for feed_id={feed_id}")
-
-        combined = pd.concat(all_frames, ignore_index=True)
-        self.db.execute(f"DROP TABLE IF EXISTS {counts_table}")
-        self.db.load_table(counts_table, combined)
-        logger.info(f"Loaded {len(combined)} edges into {counts_table}")
+        """Build city2graph edges (delegated to builders module)."""
+        from ptn_analysis.data.builders import build_connections
+        build_connections(self.db, self.city_key)
 
     def _transform_views(self) -> None:
-        """Build shared analysis views and supporting indexes."""
-        logger.info("Building shared analysis views and indexes")
-        self._run_sql_script("views.sql", ptn_launch_date=PTN_LAUNCH_DATE)
+        """Build shared analysis views and supporting indexes.
+
+        Executes SQL bundles in order: core (always), mobility (if passup/OTP
+        tables exist), equity (if poverty/OurWPG tables exist). Gracefully
+        skips optional bundles when their required tables are missing.
+        """
+        logger.info("Building core views (GTFS + census)")
+        self._run_sql_script("views_core.sql", ptn_launch_date=PTN_LAUNCH_DATE)
+
+        # Mobility views need era-split operational tables
+        mobility_deps = ["passups", "ontime_performance", "passenger_counts"]
+        if all(self.db.relation_exists(self.db.table_name(t, self.city_key)) for t in mobility_deps):
+            logger.info("Building mobility views (passups, OTP, reliability)")
+            self._run_sql_script("views_mobility.sql", ptn_launch_date=PTN_LAUNCH_DATE)
+        else:
+            missing = [t for t in mobility_deps if not self.db.relation_exists(self.db.table_name(t, self.city_key))]
+            logger.warning(f"Skipping mobility views: missing {missing}")
+
+        # Equity views need poverty/OurWPG/permits tables
+        equity_deps = [
+            "census_poverty_2021", "poverty_mbm",
+            "ourwpg_mixed_use_corridors", "ourwpg_major_redev_sites",
+            "ourwpg_mature_communities", "ourwpg_regional_centres",
+            "development_permits",
+        ]
+        if all(self.db.relation_exists(self.db.table_name(t, self.city_key)) for t in equity_deps):
+            logger.info("Building equity views (poverty, policy alignment)")
+            try:
+                self._run_sql_script("views_equity.sql", ptn_launch_date=PTN_LAUNCH_DATE)
+            except Exception as exc:
+                logger.warning(f"Equity views failed (optional tables may be missing): {exc}")
+        else:
+            logger.warning("Skipping equity views: poverty tables not loaded")
+
         self._run_sql_script("indexes.sql")
 
     def _load_daily_service(self, feed, target_date: str) -> None:
@@ -1310,81 +934,12 @@ class DatasetPipeline:
         return bool(_SAFE_SQL_VALUE_RE.match(value))
 
     def run_data_quality_checks(self) -> list[dict[str, str]]:
-        """Run automated data quality checks across all 4 DQ dimensions.
-
-        Dimensions per COMP 4710 (Accuracy, Completeness, Consistency, Conformity).
-
-        Returns:
-            List of check results with dimension, check, status, and detail.
-        """
-        results: list[dict[str, str]] = []
-        ck = self.city_key
-
-        def _check(
-            dimension: str,
-            check_name: str,
-            query: str,
-            params: dict | None = None,
-            threshold: int = 0,
-        ) -> None:
-            """Run one DQ check and record the result."""
-            try:
-                result = self.db.first(query, params or {})
-                count = result if result is not None else 0
-                if count <= threshold:
-                    results.append({"dimension": dimension, "check": check_name, "status": "pass", "detail": f"{count} issues"})
-                else:
-                    results.append({"dimension": dimension, "check": check_name, "status": "warn", "detail": f"{count} issues found"})
-            except Exception as exc:
-                results.append({"dimension": dimension, "check": check_name, "status": "skip", "detail": str(exc)[:60]})
-
-        stops = self.db.table_name("stops", ck)
-        trips = self.db.table_name("trips", ck)
-        routes = self.db.table_name("routes", ck)
-        stop_times = self.db.table_name("stop_times", ck)
-
-        # --- ACCURACY: data reflects real-world truth ---
-        _check(
-            "Accuracy",
-            "Stops within Winnipeg bounds",
-            f"SELECT COUNT(*) FROM {stops} WHERE stop_lat NOT BETWEEN :min_lat AND :max_lat OR stop_lon NOT BETWEEN :min_lon AND :max_lon",
-            params={
-                "min_lat": WPG_BOUNDS["min_lat"],
-                "max_lat": WPG_BOUNDS["max_lat"],
-                "min_lon": WPG_BOUNDS["min_lon"],
-                "max_lon": WPG_BOUNDS["max_lon"],
-            },
-        )
-        _check("Accuracy", "Routes have valid short names",
-               f"SELECT COUNT(*) FROM {routes} WHERE route_short_name IS NULL OR LENGTH(TRIM(route_short_name)) = 0")
-
-        # --- COMPLETENESS: absence of missing required values ---
-        _check("Completeness", "Stops have coordinates",
-               f"SELECT COUNT(*) FROM {stops} WHERE stop_lat IS NULL OR stop_lon IS NULL")
-        _check("Completeness", "Trips have route_id",
-               f"SELECT COUNT(*) FROM {trips} WHERE route_id IS NULL")
-        _check("Completeness", "Stop_times have arrival_time",
-               f"SELECT COUNT(*) FROM {stop_times} WHERE arrival_time IS NULL OR departure_time IS NULL")
-
-        # --- CONSISTENCY: relational and logical integrity ---
-        _check("Consistency", "Trips reference valid routes",
-               f"SELECT COUNT(*) FROM {trips} t LEFT JOIN {routes} r ON t.feed_id = r.feed_id AND t.route_id = r.route_id WHERE r.route_id IS NULL")
-        _check("Consistency", "Stop_times reference valid stops",
-               f"SELECT COUNT(*) FROM {stop_times} st LEFT JOIN {stops} s ON st.feed_id = s.feed_id AND st.stop_id = s.stop_id WHERE s.stop_id IS NULL")
-        _check("Consistency", "Departure >= Arrival times",
-               f"SELECT COUNT(*) FROM {stop_times} WHERE departure_time < arrival_time")
-
-        # --- CONFORMITY: adherence to formats and standards ---
-        _check("Conformity", "GTFS time format (HH:MM:SS)",
-               f"SELECT COUNT(*) FROM {stop_times} WHERE arrival_time NOT SIMILAR TO '[0-9]{{2,}}:[0-9]{{2}}:[0-9]{{2}}'")
-        _check("Conformity", "Feed IDs are valid identifiers",
-               f"SELECT COUNT(DISTINCT feed_id) FROM {stops} WHERE feed_id NOT SIMILAR TO '[a-z0-9_-]+'")
-
-        # Log all results
+        """Run automated data quality checks (delegated to quality module)."""
+        from ptn_analysis.data.quality import run_data_quality_checks
+        results = run_data_quality_checks(self.db, self.city_key)
         for r in results:
             icon = "PASS" if r["status"] == "pass" else ("WARN" if r["status"] == "warn" else "SKIP")
             logger.info(f"DQ [{r['dimension']}] {icon}: {r['check']} — {r['detail']}")
-
         return results
 
     def _render_dq_table(self, dq_results: list[dict[str, str]]) -> None:

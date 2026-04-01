@@ -48,7 +48,7 @@ help:
 	@echo "    make clean       Clear local data cache"
 
 setup:
-	@mkdir -p data/raw data/cache data/interim data/processed data/external reports/pr1/figures reports/pr2/figures
+	@mkdir -p data/raw data/cache data/interim data/processed data/external reports/pr1/figures reports/pr2/figures reports/final/figures
 	@test -f .env || cp .env.example .env
 	uv venv --python 3.11
 	uv sync --all-extras
@@ -73,26 +73,47 @@ format:
 test:
 	MPLCONFIGDIR=/tmp/matplotlib $(PYTHON) -m compileall ptn_analysis
 	MPLCONFIGDIR=/tmp/matplotlib $(PYTHON) -c "from ptn_analysis import CoverageAnalyzer, FrequencyAnalyzer, NetworkAnalyzer; print('import smoke ok')"
-	MPLCONFIGDIR=/tmp/matplotlib $(PYTHON) -c "from ptn_analysis.reporting import REPORT_NOTEBOOKS, generate_figures; print('reporting import ok')"
+	MPLCONFIGDIR=/tmp/matplotlib $(PYTHON) -c "from ptn_analysis.context.reporting import REPORT_NOTEBOOKS, generate_figures; print('reporting import ok')"
 	MPLCONFIGDIR=/tmp/matplotlib $(PYTHON) -c "from ptn_analysis.context.serving import Dashboard; print('app import ok')"
 	@if [ -d tests ]; then $(PYTHON) -m pytest tests/ -v --tb=short -m "not integration"; else echo "No tests/ directory found; skipping pytest."; fi
 
-clean:
+# ── Safe clean (daily use — no data loss) ──────────────────────────
+clean-cache:
 	rm -f data/pipeline.log
-	rm -rf data/interim/ data/processed/ data/exports/
-	rm -rf data/raw/employment/ data/raw/gtfs_archive/ data/raw/open_data/ data/raw/api_cache/
-	rm -f data/raw/google_transit.zip data/raw/ywg_census_da_CA21.geojson data/raw/manitoba-latest.osm.pbf
-	rm -f data/raw/archive_index.html data/raw/**/*.part
+	rm -rf data/cache/open_data/ data/cache/api/ data/cache/routing/ data/cache/mobility_data/
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -name ".DS_Store" -delete 2>/dev/null || true
+	@echo "Caches cleared."
+
+clean-reports:
 	find notebooks -type f -name "*.executed.ipynb" -delete 2>/dev/null || true
 	find notebooks -name "*.duckdb" -delete 2>/dev/null || true
 	find reports/pr1/figures -mindepth 1 -delete 2>/dev/null || true
 	find reports/pr2/figures -mindepth 1 -delete 2>/dev/null || true
+	find reports/final/figures -mindepth 1 -delete 2>/dev/null || true
 	find reports -type f \( -name "*.aux" -o -name "*.log" -o -name "*.out" -o -name "*.fls" -o -name "*.fdb_latexmk" \) -delete 2>/dev/null || true
 	find models/production -type f \( -name "*.pkl" -o -name "*.joblib" \) -delete 2>/dev/null || true
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -name ".DS_Store" -delete 2>/dev/null || true
+	@echo "Report artifacts cleared."
+
+# Default clean = SAFE (no DB loss)
+clean: clean-cache clean-reports
+
+# ── Destructive clean (explicit only) ──────────────────────────────
+clean-db:
+	rm -rf data/interim/ data/processed/
+	@mkdir -p data/interim data/processed
+	@echo "Database files removed. Run 'make data' or 'make data-cached' to rebuild."
+
+clean-raw:
+	rm -rf data/raw/employment/ data/raw/gtfs_archive/ data/raw/gtfs_feeds/ data/raw/open_data/
+	rm -f data/raw/google_transit.zip data/raw/ywg_census_da_CA21.geojson data/raw/manitoba-latest.osm.pbf
+	rm -f data/raw/archive_index.html data/raw/**/*.part
+	@echo "Raw downloads removed."
+
+clean-all: clean clean-db clean-raw
+	rm -rf data/exports/
 	@mkdir -p data/raw data/cache data/interim data/processed data/external data/exports
-	@echo "Fully cleared. Run 'make data' for a fresh rebuild."
+	@echo "Everything cleared. Run 'make data' for a full rebuild."
 
 data:
 	$(PYTHON) -m ptn_analysis.data.make_dataset all
@@ -136,3 +157,6 @@ exports:
 
 validate:
 	$(PYTHON) -m ptn_analysis.data.make_dataset validate
+
+snapshot:
+	$(PYTHON) -m ptn_analysis.data.make_dataset snapshot

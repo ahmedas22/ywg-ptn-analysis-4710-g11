@@ -6,6 +6,7 @@ from functools import lru_cache
 import os
 from pathlib import Path
 import re
+import zipfile
 
 from loguru import logger
 
@@ -18,8 +19,19 @@ from ptn_analysis.context.config import (
     PTN_LAUNCH_DATE,
 )
 from ptn_analysis.context.db import TransitDB
-from ptn_analysis.context.http import Downloader
-from ptn_analysis.data.sources.common import is_valid_zip
+from ptn_analysis.context.http import DataClient
+
+
+def is_valid_zip(path: Path) -> bool:
+    """Return whether a file is a readable ZIP archive."""
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            zf.namelist()
+        return True
+    except Exception:
+        return False
 
 GTFS_TABLE_NAMES = [
     "agency",
@@ -37,7 +49,7 @@ GTFS_TABLE_NAMES = [
 
 CITY_GTFS_DOWNLOAD_URLS = {"ywg": GTFS_URL}
 
-_downloader = Downloader()
+_downloader = DataClient()
 
 
 def current_url(city_key: str) -> str:
@@ -98,6 +110,17 @@ def load_feed_tables(
         load_frame.insert(0, "feed_id", feed_id)
         physical_table_name = db_instance.table_name(table_name, city_key)
         if db_instance.relation_exists(physical_table_name):
+            # Align columns: add missing cols as NA so append works by name
+            existing_cols = [
+                r[0] for r in db_instance.query(
+                    f"SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_name = '{physical_table_name}' ORDER BY ordinal_position"
+                ).values
+            ]
+            for col in existing_cols:
+                if col not in load_frame.columns:
+                    load_frame[col] = None
+            load_frame = load_frame[existing_cols]
             db_instance.execute(
                 f"DELETE FROM {physical_table_name} WHERE feed_id = :feed_id",
                 {"feed_id": feed_id},
@@ -170,3 +193,154 @@ def load_archive(
     if loaded_feed is None:
         loaded_feed = read_feed(download_archive(archive_date))
     return load_feed_tables(city_key, db_instance, loaded_feed, feed_id)
+
+
+# ── Manifest-driven GTFS resolution ───────────────────────────────────
+
+
+def resolve_and_download(snapshot_id: str, city_key: str = "ywg") -> Path:
+    """Download a GTFS feed using the manifest provider chain.
+
+    Tries providers in order (mobility_data → wtlivewpg → direct).
+    Saves to legacy-compatible paths so builders/routing work unchanged.
+
+    Args:
+        snapshot_id: Manifest snapshot ID (e.g. "current", "2024-09-01").
+        city_key: City namespace.
+
+    Returns:
+        Path to the downloaded GTFS ZIP.
+    """
+    from ptn_analysis.context.config import load_gtfs_manifest
+
+    manifest = load_gtfs_manifest()
+    entry = next(
+        (f for f in manifest.get("feeds", [])
+         if f["snapshot_id"] == snapshot_id and f["city_key"] == city_key),
+        None,
+    )
+
+    # Determine destination path (legacy-compatible)
+    if snapshot_id == "current":
+        dest = GTFS_ZIP_PATH
+    else:
+        dest = GTFS_ARCHIVE_DIR / f"{snapshot_id}.zip"
+
+    if dest.exists() and dest.stat().st_size > 0:
+        logger.info(f"GTFS {snapshot_id} cached at {dest}")
+        return dest
+
+    if entry is None:
+        logger.warning(f"No manifest entry for {snapshot_id}/{city_key}, using direct download")
+        if snapshot_id == "current":
+            return download_current(city_key)
+        return download_archive(snapshot_id)
+
+    # Try providers in order
+    for provider in entry.get("providers", []):
+        try:
+            ptype = provider["type"]
+            if ptype == "mobility_data":
+                path = _download_via_mobility_data(
+                    provider, dest, city_key, manifest,
+                    target_service_date=entry.get("target_service_date", "latest"),
+                )
+            elif ptype == "wtlivewpg":
+                path = _download_via_wtlivewpg(provider, dest)
+            elif ptype == "direct":
+                path = _download_via_direct(provider, dest)
+            else:
+                continue
+            if path and path.exists() and is_valid_zip(path):
+                logger.info(f"GTFS {snapshot_id} downloaded via {ptype}")
+                return path
+        except Exception as e:
+            logger.warning(f"Provider {provider['type']} failed for {snapshot_id}: {e}")
+
+    raise RuntimeError(f"All providers failed for GTFS {snapshot_id}/{city_key}")
+
+
+def _download_via_mobility_data(
+    provider: dict, dest: Path, city_key: str, manifest: dict,
+    target_service_date: str = "latest",
+) -> Path | None:
+    """Download GTFS via MobilityData API.
+
+    Args:
+        provider: Provider config from manifest entry.
+        dest: Local destination path.
+        city_key: City namespace.
+        manifest: Full manifest dict (for pinned feed IDs).
+        target_service_date: The entry's target_service_date for dataset selection.
+    """
+    from ptn_analysis.data.sources.mobility_data import MobilityDataClient
+
+    client = MobilityDataClient()
+    if not client.available:
+        logger.debug("MobilityData: no refresh token, skipping")
+        return None
+
+    # Use pinned feed_id or discover
+    feed_id = provider.get("feed_id")
+    if not feed_id:
+        pinned = manifest.get("pinned_feed_ids", {})
+        feed_id = pinned.get(city_key)
+    if not feed_id:
+        feed_id = client.discover_feed_id(city_key)
+        if not feed_id:
+            return None
+
+    # Use the ENTRY's target_service_date, not the provider block
+    selector = provider.get("selector", "latest")
+    if selector == "latest" or target_service_date in ("current", "latest"):
+        dataset = client.find_dataset_for_date(feed_id, "latest")
+    else:
+        dataset = client.find_dataset_for_date(feed_id, target_service_date)
+
+    if dataset is None:
+        return None
+
+    return client.download_dataset(dataset, dest)
+
+
+def _download_via_wtlivewpg(provider: dict, dest: Path) -> Path:
+    """Download GTFS from wtlivewpg.com archive."""
+    archive_date = provider.get("archive_date")
+    if not archive_date:
+        raise ValueError("wtlivewpg provider requires archive_date")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _downloader.request(
+        f"{GTFS_ARCHIVE_URL}/{archive_date}.zip",
+        cache_path=dest,
+        response_format="bytes",
+    )
+    return dest
+
+
+def _download_via_direct(provider: dict, dest: Path) -> Path:
+    """Download GTFS from a direct URL."""
+    url = provider.get("url")
+    if not url:
+        raise ValueError("direct provider requires url")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _downloader.request(url, cache_path=dest, response_format="bytes")
+    return dest
+
+
+def manifest_feeds(city_key: str = "ywg", era: str | None = None) -> list[dict]:
+    """Return manifest feed entries filtered by city and optionally era.
+
+    Args:
+        city_key: City namespace.
+        era: Filter to "pre_ptn", "post_ptn", or None for all.
+
+    Returns:
+        List of manifest feed entry dicts.
+    """
+    from ptn_analysis.context.config import load_gtfs_manifest
+
+    manifest = load_gtfs_manifest()
+    feeds = [f for f in manifest.get("feeds", []) if f["city_key"] == city_key]
+    if era:
+        feeds = [f for f in feeds if f.get("era") == era]
+    return feeds

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import duckdb_engine  # noqa: F401 — registers dialect with SQLAlchemy entry-points
 from pathlib import Path
 import re
 from typing import Any
 
+import duckdb
+import duckdb_engine  # noqa: F401 — registers dialect with SQLAlchemy entry-points
 from loguru import logger
 import pandas as pd
 from sqlalchemy import create_engine
@@ -97,7 +98,7 @@ class TransitDB:
             return self.first(
                 "SELECT h3_latlng_to_cell(49.8951, -97.1384, 8)"
             ) is not None
-        except Exception:
+        except (duckdb.Error, OSError):
             logger.debug("DuckDB h3 extension unavailable")
             return False
 
@@ -249,8 +250,9 @@ class TransitDB:
         )
         try:
             geometry_series = gpd.GeoSeries.from_wkb(geometry_values)
-        except Exception:
-            # DuckDB native GEOMETRY isn't plain WKB — re-query with ST_AsWKB
+        except (TypeError, ValueError, Exception):
+            # DuckDB native GEOMETRY isn't plain WKB — GEOSException
+            # inherits ShapelyError→Exception. Re-query with ST_AsWKB
             wkb_sql = (
                 f"SELECT * EXCLUDE ({geometry_col}), "
                 f"ST_AsWKB({geometry_col}) AS {geometry_col} "
@@ -333,6 +335,7 @@ class TransitDB:
         Returns:
             DB-API cursor result.
         """
+        self._invalidate_cache()
         raw_connection = self.engine.raw_connection()
         try:
             cursor = raw_connection.cursor()

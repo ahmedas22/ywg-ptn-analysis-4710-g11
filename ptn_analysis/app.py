@@ -7,14 +7,21 @@ import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
+from ptn_analysis.analysis.equity import EquityAnalyzer
 from ptn_analysis.analysis.visualization import (
     PTN_TIER_COLORS,
     PTN_TIER_ORDER,
     create_employment_access_change_chart,
 )
-from ptn_analysis.context.reporting import collect_summary_stats
-from ptn_analysis.context.config import DEFAULT_CITY_KEY, FEED_ID_CURRENT, SERVING_DUCKDB_PATH, WPG_BOUNDS
+from ptn_analysis.context.config import (
+    DEFAULT_CITY_KEY,
+    DUCKDB_PATH,
+    FEED_ID_CURRENT,
+    SERVING_DUCKDB_PATH,
+    WPG_BOUNDS,
+)
 from ptn_analysis.context.db import TransitDB
+from ptn_analysis.context.reporting import collect_summary_stats
 from ptn_analysis.context.serving import Dashboard, MapDataLoader
 
 # ---------------------------------------------------------------------------
@@ -24,13 +31,68 @@ from ptn_analysis.context.serving import Dashboard, MapDataLoader
 
 
 @st.cache_resource
+def _get_serving_db() -> TransitDB:
+    return TransitDB(SERVING_DUCKDB_PATH)
+
+
+@st.cache_resource
 def _get_db() -> Dashboard:
-    return Dashboard(TransitDB(SERVING_DUCKDB_PATH))
+    return Dashboard(_get_serving_db())
 
 
 @st.cache_resource
 def _get_map_loader() -> MapDataLoader:
-    return MapDataLoader(DEFAULT_CITY_KEY, FEED_ID_CURRENT, TransitDB(SERVING_DUCKDB_PATH))
+    return MapDataLoader(DEFAULT_CITY_KEY, FEED_ID_CURRENT, _get_serving_db())
+
+
+@st.cache_resource
+def _get_working_db() -> TransitDB:
+    """Working DB for equity computations requiring spatial + raw GTFS."""
+    return TransitDB(DUCKDB_PATH)
+
+
+@st.cache_resource
+def _get_equity_analyzer() -> EquityAnalyzer:
+    return EquityAnalyzer(DEFAULT_CITY_KEY, FEED_ID_CURRENT, _get_working_db())
+
+
+@st.cache_data(show_spinner=False)
+def _load_equity_report() -> pd.DataFrame:
+    return _get_equity_analyzer().travel_time_equity_report()
+
+
+@st.cache_data(show_spinner=False)
+def _load_poverty_correlation() -> pd.DataFrame:
+    return _get_equity_analyzer().poverty_transit_correlation()
+
+
+@st.cache_data(show_spinner=False)
+def _load_equity_weighted() -> pd.DataFrame:
+    return _get_equity_analyzer().equity_weighted_accessibility()
+
+
+@st.cache_data(show_spinner=False)
+def _load_stop_policy_alignment() -> pd.DataFrame:
+    db = _get_serving_db()
+    tbl = db.table_name("stop_policy_alignment", DEFAULT_CITY_KEY)
+    if not db.relation_exists(tbl):
+        return pd.DataFrame()
+    return db.query(
+        f"SELECT * FROM {tbl} WHERE feed_id = :feed_id",
+        {"feed_id": FEED_ID_CURRENT},
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _load_stop_housing_growth() -> pd.DataFrame:
+    db = _get_serving_db()
+    tbl = db.table_name("stop_housing_growth", DEFAULT_CITY_KEY)
+    if not db.relation_exists(tbl):
+        return pd.DataFrame()
+    return db.query(
+        f"SELECT * FROM {tbl} WHERE feed_id = :feed_id ORDER BY permit_count DESC",
+        {"feed_id": FEED_ID_CURRENT},
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -97,7 +159,7 @@ def render_density_chart(coverage: pd.DataFrame) -> None:
         return
     top = coverage.nlargest(20, "stop_count").sort_values("stop_count")
     color_map = {"High": "#1a9850", "Medium": "#fee08b", "Low": "#d73027"}
-    colors = [color_map.get(c, "#6B7280") for c in top["coverage_category"]]
+    colors = [color_map.get(c, "#6B7280") for c in top["density_category"]]
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(top["neighbourhood"], top["stop_count"], color=colors)
     ax.set_title("Top 20 Neighbourhoods by Stop Count")
@@ -158,6 +220,170 @@ def render_jobs_access_chart(jobs_access_comparison: pd.DataFrame) -> None:
     plt.close(fig)
 
 
+def render_equity_deep_dive() -> None:
+    """Render the Equity Deep Dive tab content."""
+    st.subheader("Income Quintile Equity Analysis")
+    equity_report = _load_equity_report()
+    if equity_report.empty:
+        st.info("Income quintile equity data is not available. Ensure census and density tables are loaded.")
+    else:
+        q_cols = st.columns(len(equity_report))
+        for idx, (_, row) in enumerate(equity_report.iterrows()):
+            with q_cols[idx]:
+                st.metric(
+                    str(row["income_quintile"]),
+                    f"{row['median_access_score']:.2f}",
+                    help=f"Median transit access score ({int(row['neighbourhood_count'])} neighbourhoods)",
+                )
+        st.dataframe(equity_report, width="stretch")
+
+    st.markdown("---")
+    st.subheader("Poverty-Transit Correlation")
+    poverty_corr = _load_poverty_correlation()
+    if poverty_corr.empty:
+        st.info("Poverty-transit correlation data is not available.")
+    else:
+        scatter_cols = [c for c in [
+            "neighbourhood", "median_household_income_2020",
+            "stop_density_per_km2", "transit_access_score",
+            "pct_commute_public_transit", "pct_seniors_65_plus",
+        ] if c in poverty_corr.columns]
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Income vs. Transit Access**")
+            if "transit_access_score" in poverty_corr.columns:
+                st.scatter_chart(
+                    poverty_corr,
+                    x="median_household_income_2020",
+                    y="transit_access_score",
+                    height=350,
+                )
+            else:
+                st.scatter_chart(
+                    poverty_corr,
+                    x="median_household_income_2020",
+                    y="stop_density_per_km2",
+                    height=350,
+                )
+        with right:
+            st.markdown("**Income vs. Stop Density**")
+            st.scatter_chart(
+                poverty_corr,
+                x="median_household_income_2020",
+                y="stop_density_per_km2",
+                height=350,
+            )
+        st.dataframe(poverty_corr[scatter_cols].head(30), width="stretch")
+
+    st.markdown("---")
+    st.subheader("Prescriptive Counterfactual: Equity-Weighted Rank Changes")
+    equity_weighted = _load_equity_weighted()
+    if equity_weighted.empty:
+        st.info("Equity-weighted accessibility data is not available.")
+    else:
+        movers_up = equity_weighted[equity_weighted["rank_change"] > 0]
+        movers_down = equity_weighted[equity_weighted["rank_change"] < 0]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Neighbourhoods ranked higher", len(movers_up))
+        c2.metric("Neighbourhoods ranked lower", len(movers_down))
+        c3.metric(
+            "Max rank improvement",
+            f"+{int(movers_up['rank_change'].max())}" if not movers_up.empty else "0",
+        )
+        display_cols = [c for c in [
+            "neighbourhood", "current_rank", "equity_rank", "rank_change",
+            "vulnerability_index", "transit_access_score", "equity_weighted_score",
+        ] if c in equity_weighted.columns]
+        st.dataframe(equity_weighted[display_cols], width="stretch")
+
+
+def render_densification_alignment() -> None:
+    """Render the Densification Alignment tab content."""
+    st.subheader("Stop-Policy Alignment with OurWPG Zones")
+    policy = _load_stop_policy_alignment()
+    if policy.empty:
+        st.info(
+            "Stop-policy alignment data is not available. "
+            "Ensure OurWPG planning zone tables are loaded."
+        )
+    else:
+        in_zone = policy[policy["in_ourwpg_zone"] == True]  # noqa: E712
+        total_stops = len(policy)
+        aligned_stops = len(in_zone)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total stops", f"{total_stops:,}")
+        c2.metric("Stops in OurWPG zones", f"{aligned_stops:,}")
+        c3.metric(
+            "Alignment rate",
+            f"{100 * aligned_stops / total_stops:.1f}%" if total_stops > 0 else "N/A",
+        )
+
+        st.markdown("**Zone breakdown**")
+        zone_cols = [c for c in [
+            "ourwpg_corridor_count", "ourwpg_redev_count",
+            "ourwpg_mature_count", "ourwpg_centre_count",
+        ] if c in policy.columns]
+        if zone_cols:
+            zone_summary = pd.DataFrame({
+                "Zone type": [
+                    "Mixed-use corridors", "Major redevelopment sites",
+                    "Mature communities", "Regional centres",
+                ][:len(zone_cols)],
+                "Stops near zone": [
+                    int((policy[c] > 0).sum()) for c in zone_cols
+                ],
+            })
+            st.dataframe(zone_summary, width="stretch")
+
+        st.markdown("**Stops aligned with OurWPG planning zones**")
+        show_cols = [c for c in [
+            "stop_id", "stop_name", "ourwpg_corridor_count",
+            "ourwpg_redev_count", "ourwpg_mature_count", "ourwpg_centre_count",
+        ] if c in in_zone.columns]
+        st.dataframe(in_zone[show_cols].head(30), width="stretch")
+
+    st.markdown("---")
+    st.subheader("Development Permits Near Transit Stops")
+    housing = _load_stop_housing_growth()
+    if housing.empty:
+        st.info(
+            "Development permit data is not available. "
+            "Ensure ywg_development_permits is loaded."
+        )
+    else:
+        stops_with_permits = housing[housing["permit_count"] > 0]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Stops with nearby permits", f"{len(stops_with_permits):,}")
+        total_units = int(housing["total_units_created"].fillna(0).sum())
+        c2.metric("Total units created", f"{total_units:,}")
+        c3.metric(
+            "Mean permits per stop",
+            f"{stops_with_permits['permit_count'].mean():.1f}" if not stops_with_permits.empty else "0",
+        )
+        show_cols = [c for c in [
+            "stop_id", "stop_name", "permit_count", "total_units_created",
+        ] if c in housing.columns]
+        st.dataframe(stops_with_permits[show_cols].head(30), width="stretch")
+
+    st.markdown("---")
+    st.subheader("Stop-Policy Alignment Summary")
+    if policy.empty and housing.empty:
+        st.info("Summary data is not available.")
+    else:
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Policy alignment by zone type**")
+            if not policy.empty and zone_cols:
+                st.bar_chart(zone_summary.set_index("Zone type"))
+        with right:
+            st.markdown("**Top stops by development permit activity**")
+            if not housing.empty and not stops_with_permits.empty:
+                top_dev = stops_with_permits.nlargest(15, "permit_count")
+                st.bar_chart(
+                    top_dev.set_index("stop_name")[["permit_count"]],
+                )
+
+
 def render_live_validation(trip_delay_summary: pd.DataFrame, stop_features: pd.DataFrame) -> None:
     left, right = st.columns(2)
     with left:
@@ -215,8 +441,10 @@ def main() -> None:
     sb.metric("Neighbourhoods", f"{stats['neighbourhood_count']:,}")
     sb.metric("Jobs access neighbourhoods", f"{stats['jobs_access_neighbourhood_count']:,}")
 
-    overview_tab, map_tab, coverage_tab, network_tab, frequency_tab, live_tab = st.tabs(
-        ["Overview", "Map", "Coverage", "Network", "Frequency", "Live"]
+    (overview_tab, map_tab, coverage_tab, network_tab, frequency_tab, live_tab,
+     equity_tab, densification_tab) = st.tabs(
+        ["Overview", "Map", "Coverage", "Network", "Frequency", "Live",
+         "Equity Deep Dive", "Densification Alignment"]
     )
 
     with overview_tab:
@@ -307,6 +535,12 @@ def main() -> None:
         st.subheader("Winnipeg Transit API v4")
         render_live_status(payload["service_status"], payload["service_advisories"])
         render_live_validation(payload["trip_delay_summary"], payload["stop_features"])
+
+    with equity_tab:
+        render_equity_deep_dive()
+
+    with densification_tab:
+        render_densification_alignment()
 
 
 if __name__ == "__main__":

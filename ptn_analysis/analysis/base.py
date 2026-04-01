@@ -52,6 +52,28 @@ class AnalyzerBase:
             {col: pd.Series(dtype=dtype) for col, dtype in schema.items()}
         )
 
+    @staticmethod
+    def _zscore(series: pd.Series) -> pd.Series:
+        """Compute z-scores using scipy, returning 0 for constant series."""
+        import numpy as np
+        from scipy import stats
+
+        clean = pd.to_numeric(series, errors="coerce").fillna(0.0)
+        if clean.std() == 0 or np.isnan(clean.std()):
+            return pd.Series(0.0, index=series.index)
+        return pd.Series(stats.zscore(clean, nan_policy="omit"), index=series.index).round(4)
+
+    @staticmethod
+    def _scale_metric(values: pd.Series) -> pd.Series:
+        """Min-max scale a series to [0, 1] using numpy."""
+        import numpy as np
+
+        arr = pd.to_numeric(values, errors="coerce").fillna(0.0).to_numpy(dtype=np.float64)
+        mn, mx = arr.min(), arr.max()
+        if mn == mx:
+            return pd.Series(0.0, index=values.index, dtype="float64")
+        return pd.Series((arr - mn) / (mx - mn), index=values.index)
+
     def _build_comparison(
         self,
         baseline_feed_id: str,
@@ -85,6 +107,14 @@ class AnalyzerBase:
     # ------------------------------------------------------------------
     # Precomputed table accessors (city2graph + r5py)
     # ------------------------------------------------------------------
+
+    def _feed_suffix(self) -> str:
+        """Canonical suffix for feed-specific table names.
+
+        Replaces hyphens with underscores so dated feed_ids like
+        '2024-12-15' produce valid SQL identifiers.
+        """
+        return self._feed_id.replace("-", "_")
 
     def _cached_table(
         self,
@@ -124,19 +154,19 @@ class AnalyzerBase:
 
     def walk_matrix(self) -> pd.DataFrame:
         """r5py WALK-only travel times for this feed."""
-        return self._cached_table(f"walk_matrix_{self._feed_id}")
+        return self._cached_table(f"walk_matrix_{self._feed_suffix()}")
 
     def transit_matrix(self) -> pd.DataFrame:
         """r5py TRANSIT+WALK travel times for this feed."""
-        return self._cached_table(f"transit_matrix_{self._feed_id}")
+        return self._cached_table(f"transit_matrix_{self._feed_suffix()}")
 
     def jobs_reachable(self) -> pd.DataFrame:
         """Precomputed jobs reachable within cutoff for this feed."""
-        return self._cached_table(f"jobs_reachable_{self._feed_id}")
+        return self._cached_table(f"jobs_reachable_{self._feed_suffix()}")
 
     def isochrones(self):
         """Precomputed r5py isochrone polygons for this feed."""
-        table = f"isochrones_{self._feed_id}"
+        table = f"isochrones_{self._feed_suffix()}"
         if not self._has_table(table):
             import geopandas as gpd
 

@@ -45,8 +45,8 @@ jobs:
 
       - name: Import shared runtime surfaces
         run: |
-          uv run python -c "from ptn_analysis.reporting import REPORT_NOTEBOOKS; print('reporting ok')"
-          uv run python -c "from ptn_analysis.reporting import generate_figures; print('report execution ok')"
+          uv run python -c "from ptn_analysis.context.reporting import REPORT_NOTEBOOKS; print('reporting ok')"
+          uv run python -c "from ptn_analysis.context.reporting import generate_figures; print('report execution ok')"
           uv run python -c "from ptn_analysis.context.serving import Dashboard; print('app ok')"
 
       - name: Run tests

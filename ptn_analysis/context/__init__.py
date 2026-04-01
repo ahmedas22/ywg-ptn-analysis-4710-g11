@@ -95,6 +95,12 @@ class TransitContext:
 
         return CoverageAnalyzer(self.city_key, self.feed_id, self.working_db)
 
+    def equity(self):
+        """Return an EquityAnalyzer bound to this context."""
+        from ptn_analysis.analysis.equity import EquityAnalyzer
+
+        return EquityAnalyzer(self.city_key, self.feed_id, self.working_db)
+
     def network(self):
         """Return a NetworkAnalyzer bound to this context.
 

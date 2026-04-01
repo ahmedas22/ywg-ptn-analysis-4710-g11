@@ -1,13 +1,10 @@
-*.duckdb filter=lfs diff=lfs merge=lfs -text
-*.pdf filter=lfs diff=lfs merge=lfs -text
-*.zip filter=lfs diff=lfs merge=lfs -text
-data/raw/*.csv filter=lfs diff=lfs merge=lfs -text
-data/raw/*.geojson filter=lfs diff=lfs merge=lfs -text
-data/raw/*.zip filter=lfs diff=lfs merge=lfs -text
-data/raw/gtfs/*.txt filter=lfs diff=lfs merge=lfs -text
-data/processed/*.duckdb filter=lfs diff=lfs merge=lfs -text
-data/external/*.csv filter=lfs diff=lfs merge=lfs -text
-data/exports/*.parquet filter=lfs diff=lfs merge=lfs -text
-data/exports/*.geojson filter=lfs diff=lfs merge=lfs -text
-data/exports/*.csv filter=lfs diff=lfs merge=lfs -text
-reports/*/figures/*.png filter=lfs diff=lfs merge=lfs -text
+# LFS disabled temporarily — quota exceeded
+# Re-enable when quota is resolved
+data/processed/wpg_transit_serving.duckdb diff=lfs merge=lfs -text
+data/cache/open_data/ontime_performance.parquet diff=lfs merge=lfs -text
+data/cache/open_data/passenger_counts.parquet diff=lfs merge=lfs -text
+data/external/*.csv diff=lfs merge=lfs -text
+data/exports/*.parquet diff=lfs merge=lfs -text
+
+# PDFs tracked normally
+*.pdf diff=astextplain

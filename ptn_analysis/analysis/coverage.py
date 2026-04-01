@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-
 import pandas as pd
 
+from ptn_analysis.analysis.base import AnalyzerBase
 from ptn_analysis.context.config import (
     WGS84_CRS,
     WINNIPEG_PROJECTED_CRS,
 )
 from ptn_analysis.context.db import TransitDB
-from ptn_analysis.analysis.base import AnalyzerBase
 
 COVERAGE_HIGH = 5.0
 COVERAGE_MEDIUM = 1.0
@@ -48,21 +47,7 @@ class CoverageAnalyzer(AnalyzerBase):
         """Clear cached query results for this analyzer instance."""
         self._result_cache.clear()
 
-    def _scale_metric(self, values: pd.Series) -> pd.Series:
-        """Scale one numeric series to the ``0`` to ``1`` range.
-
-        Args:
-            values: Numeric series.
-
-        Returns:
-            Min-max scaled series.
-        """
-        numeric_values = pd.to_numeric(values, errors="coerce").fillna(0.0)
-        min_value = float(numeric_values.min())
-        max_value = float(numeric_values.max())
-        if min_value == max_value:
-            return pd.Series(0.0, index=numeric_values.index, dtype="float64")
-        return (numeric_values - min_value) / (max_value - min_value)
+    # _scale_metric and _zscore inherited from AnalyzerBase
 
     @staticmethod
     def _empty_neighbourhood_density_frame() -> pd.DataFrame:
@@ -125,22 +110,6 @@ class CoverageAnalyzer(AnalyzerBase):
                 "large_employer_count": pd.Series(dtype="float64"),
                 "jobs_proxy_log": pd.Series(dtype="float64"),
                 "jobs_access_score": pd.Series(dtype="float64"),
-            }
-        )
-
-    @staticmethod
-    def _empty_accessibility_frame(output_segment_count_col: str) -> pd.DataFrame:
-        """Return an empty walkability/bikeability base table with the expected schema."""
-        return pd.DataFrame(
-            {
-                "feed_id": pd.Series(dtype="object"),
-                "neighbourhood_id": pd.Series(dtype="object"),
-                "neighbourhood": pd.Series(dtype="object"),
-                "area_km2": pd.Series(dtype="float64"),
-                "stop_count": pd.Series(dtype="float64"),
-                "stop_density_per_km2": pd.Series(dtype="float64"),
-                "accessible_stop_count": pd.Series(dtype="float64"),
-                output_segment_count_col: pd.Series(dtype="float64"),
             }
         )
 
@@ -380,13 +349,12 @@ class CoverageAnalyzer(AnalyzerBase):
         buffer_metres: float,
         output_segment_count_col: str,
     ) -> pd.DataFrame:
-        """Shared SQL kernel for walkability and bikeability.
+        """Shared SQL kernel for cycling infrastructure accessibility.
 
         Args:
-            infra_table: Logical table name for infrastructure segments (e.g. ``"walkways"``).
+            infra_table: Logical table name for infrastructure segments.
             buffer_metres: Stop-access buffer radius in metres.
-            output_segment_count_col: Output column name for the segment count
-                (e.g. ``"walkway_segment_count"``).
+            output_segment_count_col: Output column name for the segment count.
 
         Returns:
             Raw neighbourhood-level accessibility table before scoring.
@@ -396,10 +364,10 @@ class CoverageAnalyzer(AnalyzerBase):
         stops_tbl = self._table("stops")
         infra_tbl = self._table(infra_table)
         if not all(
-            self._db.relation_exists(table_name)
-            for table_name in (density_tbl, nb_tbl, stops_tbl, infra_tbl)
+            self._db.relation_exists(t)
+            for t in (density_tbl, nb_tbl, stops_tbl, infra_tbl)
         ):
-            return self._empty_accessibility_frame(output_segment_count_col)
+            return pd.DataFrame()
 
         result = self._db.query(
             f"""
@@ -448,7 +416,11 @@ class CoverageAnalyzer(AnalyzerBase):
         return result
 
     def cycling_infrastructure_index(self, buffer_metres: float = 500) -> pd.DataFrame:
-        """Build a neighbourhood cycling infrastructure index for one feed.
+        """Build a neighbourhood cycling infrastructure index.
+
+        Uses real Cycling Network data (kjd9-dvf5) with segment counts
+        per neighbourhood. Scores combine stop access, density and
+        cycling infrastructure availability.
 
         Args:
             buffer_metres: Cycling buffer in metres.
@@ -462,7 +434,7 @@ class CoverageAnalyzer(AnalyzerBase):
         return self._result_cache[cache_key].copy()
 
     def _compute_bikeability(self, buffer_metres: float) -> pd.DataFrame:
-        """Compute bikeability scores for one buffer distance."""
+        """Compute cycling infrastructure scores for one buffer distance."""
         df = self._build_infrastructure_accessibility_base(
             "cycling_paths",
             buffer_metres,
@@ -481,91 +453,161 @@ class CoverageAnalyzer(AnalyzerBase):
         return df.sort_values("bikeability_score", ascending=False).reset_index(drop=True)
 
     def multimodal_equity(self) -> pd.DataFrame:
-        """Combine walkability, bikeability, and jobs access into one table.
+        """Combine transit accessibility, cycling infra and jobs access.
+
+        Replaces walkability component with transit_accessibility_score
+        (WalkScore-style decay model). Cycling uses real cycling network
+        data from Winnipeg Open Data.
 
         Returns:
-            Multimodal access table.
+            Multimodal access table with gap scores.
         """
         jobs_access_table = self.jobs_access()
-        walkability_table = self.walkability()
         bikeability_table = self.cycling_infrastructure_index()
+        access_table = self.transit_accessibility_score()
 
-        if jobs_access_table.empty and walkability_table.empty and bikeability_table.empty:
+        if jobs_access_table.empty and bikeability_table.empty and access_table.empty:
             return pd.DataFrame()
 
-        multimodal_table = pd.DataFrame()
         if not jobs_access_table.empty:
             multimodal_table = jobs_access_table[
-                [
-                    "neighbourhood_id",
-                    "neighbourhood",
-                    "jobs_access_score",
-                    "jobs_proxy_score",
-                ]
+                ["neighbourhood_id", "neighbourhood", "jobs_access_score", "jobs_proxy_score"]
             ].copy()
-        elif not walkability_table.empty:
-            multimodal_table = walkability_table[["neighbourhood_id", "neighbourhood"]].copy()
+        elif not access_table.empty:
+            multimodal_table = access_table[["neighbourhood_id", "neighbourhood"]].copy()
         else:
             multimodal_table = bikeability_table[["neighbourhood_id", "neighbourhood"]].copy()
 
-        if not walkability_table.empty:
+        if not access_table.empty:
             multimodal_table = multimodal_table.merge(
-                walkability_table[
-                    [
-                        "neighbourhood_id",
-                        "walkability_score",
-                        "accessible_stop_count",
-                        "walkway_segment_count",
-                    ]
-                ],
+                access_table[["neighbourhood_id", "transit_access_score"]],
                 on="neighbourhood_id",
                 how="left",
             )
         if not bikeability_table.empty:
             multimodal_table = multimodal_table.merge(
-                bikeability_table[
-                    [
-                        "neighbourhood_id",
-                        "bikeability_score",
-                        "cycling_segment_count",
-                    ]
-                ],
+                bikeability_table[["neighbourhood_id", "bikeability_score", "cycling_segment_count"]],
                 on="neighbourhood_id",
                 how="left",
             )
 
-        if "jobs_access_score" not in multimodal_table.columns:
-            multimodal_table["jobs_access_score"] = 0.0
-        if "walkability_score" not in multimodal_table.columns:
-            multimodal_table["walkability_score"] = 0.0
-        if "bikeability_score" not in multimodal_table.columns:
-            multimodal_table["bikeability_score"] = 0.0
-
-        multimodal_table["jobs_access_score"] = pd.to_numeric(
-            multimodal_table["jobs_access_score"],
-            errors="coerce",
-        ).fillna(0.0)
-        multimodal_table["walkability_score"] = pd.to_numeric(
-            multimodal_table["walkability_score"],
-            errors="coerce",
-        ).fillna(0.0)
-        multimodal_table["bikeability_score"] = pd.to_numeric(
-            multimodal_table["bikeability_score"],
-            errors="coerce",
-        ).fillna(0.0)
+        for col in ["jobs_access_score", "transit_access_score", "bikeability_score"]:
+            if col not in multimodal_table.columns:
+                multimodal_table[col] = 0.0
+            multimodal_table[col] = pd.to_numeric(
+                multimodal_table[col], errors="coerce"
+            ).fillna(0.0)
 
         multimodal_table["multimodal_access_score"] = (
             0.40 * self._scale_metric(multimodal_table["jobs_access_score"])
-            + 0.30 * self._scale_metric(multimodal_table["walkability_score"])
-            + 0.30 * self._scale_metric(multimodal_table["bikeability_score"])
+            + 0.35 * self._scale_metric(multimodal_table["transit_access_score"])
+            + 0.25 * self._scale_metric(multimodal_table["bikeability_score"])
         ).round(4)
         multimodal_table["multimodal_gap_score"] = (
             1 - multimodal_table["multimodal_access_score"]
         ).round(4)
         return multimodal_table.sort_values(
-            "multimodal_gap_score",
-            ascending=False,
+            "multimodal_gap_score", ascending=False
         ).reset_index(drop=True)
+
+    def transit_accessibility_score(self) -> pd.DataFrame:
+        """Compute WalkScore-style transit accessibility per neighbourhood.
+
+        Uses exponential distance decay from neighbourhood centroids to
+        transit stops, weighted by PTN tier:
+        ``score = SUM(tier_weight * exp(-dist * CIRCUITY / DECAY_M))``
+
+        Stop tiers are derived through the proper join path:
+        stops → stop_times → trips → routes → route_ptn_tiers view.
+
+        Based on WalkScore (2011) Transit Score methodology.
+
+        Returns:
+            Neighbourhood transit accessibility table.
+        """
+        import numpy as np
+
+        TIER_WEIGHTS = {
+            "Rapid Transit": 2.0, "Frequent Express": 1.5, "Frequent": 1.25,
+            "Direct": 1.0, "Connector": 0.5, "Limited Span": 0.25,
+            "Community": 0.25,
+        }
+        CIRCUITY_FACTOR = 1.3
+        WALKSCORE_DECAY_M = 1086.0  # WalkScore 2011 decay constant
+
+        nb_tbl = self._table("neighbourhoods")
+        stops_tbl = self._table("stops")
+        stop_times_tbl = self._table("stop_times")
+        trips_tbl = self._table("trips")
+        tiers_view = self._table("route_ptn_tiers")
+        if not all(
+            self._db.relation_exists(t)
+            for t in (nb_tbl, stops_tbl, stop_times_tbl, trips_tbl, tiers_view)
+        ):
+            return pd.DataFrame()
+
+        # Derive stop tiers through trips → stop_times → routes → ptn_tiers
+        stop_tiers = self._db.query(
+            f"""
+            SELECT DISTINCT s.stop_id, s.stop_lat, s.stop_lon,
+                   COALESCE(t.ptn_tier, 'Community') AS ptn_tier
+            FROM {stops_tbl} s
+            JOIN {stop_times_tbl} st
+                ON s.feed_id = st.feed_id AND s.stop_id = st.stop_id
+            JOIN {trips_tbl} tr
+                ON st.feed_id = tr.feed_id AND st.trip_id = tr.trip_id
+            LEFT JOIN {tiers_view} t
+                ON tr.feed_id = t.feed_id AND tr.route_id = t.route_id
+            WHERE s.feed_id = :feed_id
+            """,
+            {"feed_id": self._feed_id},
+        )
+        if stop_tiers.empty:
+            return pd.DataFrame()
+
+        # Deduplicate: keep highest-tier per stop
+        tier_rank = {v: i for i, v in enumerate(TIER_WEIGHTS)}
+        stop_tiers["_rank"] = stop_tiers["ptn_tier"].map(tier_rank).fillna(len(tier_rank))
+        stop_tiers = (
+            stop_tiers.sort_values("_rank")
+            .drop_duplicates(subset=["stop_id"], keep="first")
+            .drop(columns=["_rank"])
+        )
+
+        # Get neighbourhood centroids
+        nb_centroids = self._db.query(
+            f"""
+            SELECT id AS neighbourhood_id, name AS neighbourhood,
+                   ST_X(ST_Centroid(geometry)) AS centroid_lon,
+                   ST_Y(ST_Centroid(geometry)) AS centroid_lat
+            FROM {nb_tbl}
+            """
+        )
+        if nb_centroids.empty:
+            return pd.DataFrame()
+
+        # Vectorized decay computation
+        stop_lat = stop_tiers["stop_lat"].values
+        stop_lon = stop_tiers["stop_lon"].values
+        weights = stop_tiers["ptn_tier"].map(TIER_WEIGHTS).fillna(0.25).values
+
+        rows = []
+        for _, nb in nb_centroids.iterrows():
+            nb_lat, nb_lon = nb["centroid_lat"], nb["centroid_lon"]
+            dlat = (stop_lat - nb_lat) * 111_320
+            dlon = (stop_lon - nb_lon) * 111_320 * np.cos(np.radians(nb_lat))
+            dist_m = np.sqrt(dlat**2 + dlon**2)
+            decay = weights * np.exp(-dist_m * CIRCUITY_FACTOR / WALKSCORE_DECAY_M)
+            rows.append({
+                "neighbourhood_id": nb["neighbourhood_id"],
+                "neighbourhood": nb["neighbourhood"],
+                "transit_access_score": round(float(decay.sum()), 4),
+            })
+        result = pd.DataFrame(rows)
+        result["transit_access_score_scaled"] = self._scale_metric(
+            result["transit_access_score"]
+        )
+        return result.sort_values("transit_access_score", ascending=False).reset_index(drop=True)
 
     def jobs_access(self) -> pd.DataFrame:
         """Return neighbourhood-level jobs access metrics for one feed.
@@ -743,467 +785,89 @@ class CoverageAnalyzer(AnalyzerBase):
             },
         )
 
-    @staticmethod
-    def _zscore(series: pd.Series) -> pd.Series:
-        """Compute z-scores for a numeric series, filling NaN with 0."""
-        numeric = pd.to_numeric(series, errors="coerce")
-        filled = numeric.fillna(numeric.median())
-        std = filled.std()
-        if std == 0 or pd.isna(std):
-            return pd.Series(0.0, index=series.index)
-        return (filled - filled.mean()) / std
+    # Equity/priority/poverty methods are in ptn_analysis.analysis.equity.EquityAnalyzer
 
-    def priority_matrix(self) -> pd.DataFrame:
-        """Build a z-score-based neighbourhood priority matrix.
+    def sidewalk_connectivity_proxy(self) -> pd.DataFrame:
+        """Compute sidewalk infrastructure near each PTN stop.
 
-        Uses standardised z-scores instead of ordinal ranks to produce
-        a continuous need index and gap index with quadrant labels:
-
-        * **need_index** = z(transit_dependency) + z(-income)
-        * **gap_index**  = z(baseline_score) - z(current_score)
-        * **quadrant**   = classify(need > 0, gap > 0)
+        Stops with <200m of sidewalk within 100m are 'phantom coverage' -
+        geometrically covered but physically inaccessible.
 
         Returns:
-            Priority table with z-score indices and quadrant labels.
+            DataFrame with stop_id, stop_name, sidewalk_m_100m, is_phantom_coverage.
         """
-        jobs_access_table = self.jobs_access()
-        if jobs_access_table.empty:
-            return jobs_access_table
-
-        priority_table = jobs_access_table.copy()
-        multimodal_table = self.multimodal_equity()
-        try:
-            equity_table = self.equity_profile()
-        except NotImplementedError:
-            equity_table = pd.DataFrame()
-
-        if not multimodal_table.empty:
-            priority_table = priority_table.merge(
-                multimodal_table[
-                    [
-                        "neighbourhood_id",
-                        "walkability_score",
-                        "bikeability_score",
-                        "multimodal_gap_score",
-                    ]
-                ],
-                on="neighbourhood_id",
-                how="left",
-            )
-        else:
-            priority_table["walkability_score"] = pd.NA
-            priority_table["bikeability_score"] = pd.NA
-            priority_table["multimodal_gap_score"] = pd.NA
-
-        if not equity_table.empty:
-            priority_table = priority_table.merge(
-                equity_table[
-                    [
-                        "neighbourhood_id",
-                        "population_total",
-                        "median_household_income_2020",
-                        "commute_public_transit",
-                    ]
-                ],
-                on="neighbourhood_id",
-                how="left",
-            )
-        else:
-            priority_table["population_total"] = pd.NA
-            priority_table["median_household_income_2020"] = pd.NA
-            priority_table["commute_public_transit"] = pd.NA
-
-        # Z-score-based need index: high transit dependency + low income = high need
-        z_transit = self._zscore(priority_table["commute_public_transit"])
-        z_neg_income = self._zscore(priority_table["median_household_income_2020"].mul(-1))
-        priority_table["need_index"] = (z_transit + z_neg_income).round(4)
-
-        # Gap index: high multimodal gap = underserved
-        z_gap = self._zscore(priority_table["multimodal_gap_score"].fillna(0))
-        z_neg_access = self._zscore(priority_table["jobs_access_score"].fillna(0).mul(-1))
-        priority_table["gap_index"] = (z_gap + z_neg_access).round(4)
-
-        # Quadrant classification
-        priority_table["quadrant"] = priority_table.apply(
-            lambda row: _classify_quadrant(row["need_index"], row["gap_index"]),
-            axis=1,
-        )
-
-        # Composite priority score (sum of z-scores, higher = more urgent)
-        priority_table["priority_score"] = (
-            priority_table["need_index"] + priority_table["gap_index"]
-        ).round(4)
-
-        return priority_table.sort_values("priority_score", ascending=False)
-
-    def build_priority_metrics_table(self) -> pd.DataFrame:
-        """Build the canonical neighbourhood priority table.
-
-        Returns:
-            Priority metrics table.
-        """
-        table_name = self._table("neighbourhood_priority_metrics")
-        if self._db.relation_exists(table_name):
-            priority_table = self._db.query(
-                f"""
-                SELECT *
-                FROM {table_name}
-                WHERE feed_id = :feed_id
-                """,
-                {"feed_id": self._feed_id},
-            )
-            sort_column = "priority_score" if "priority_score" in priority_table.columns else "priority_rank"
-            if sort_column in priority_table.columns:
-                ascending = sort_column == "priority_rank"
-                priority_table = priority_table.sort_values(sort_column, ascending=ascending)
-            return priority_table
-        return self.priority_matrix()
-
-    # ------------------------------------------------------------------
-    # CHASS Census Journey to Work analysis methods
-    # ------------------------------------------------------------------
-
-    def commute_duration_vs_r5py(self) -> pd.DataFrame:
-        """Compare census self-reported commute durations against r5py travel times.
-
-        Joins CHASS commute duration distribution per DA with r5py P50
-        transit travel time. Useful for validating r5py against real-world
-        commute behaviour.
-
-        Returns:
-            DataFrame with DA-level census duration bins and r5py P50 travel time.
-            Empty DataFrame if required tables are missing.
-        """
-        census_table = self._table("census_da")
-        transit_matrix_table = self._table(f"transit_matrix_{self._feed_id}")
-        if not self._db.relation_exists(census_table):
+        stops_tbl = self._table("stops")
+        walkways_tbl = self._table("walkways")
+        if not all(
+            self._db.relation_exists(t) for t in (stops_tbl, walkways_tbl)
+        ):
             return pd.DataFrame()
 
-        census_df = self._db.query(
+        result = self._db.query(
             f"""
-            SELECT geo_uid,
-                   commute_dur_total,
-                   commute_dur_lt15,
-                   commute_dur_15_29,
-                   commute_dur_30_44,
-                   commute_dur_45_59,
-                   commute_dur_60_plus
-            FROM {census_table}
-            WHERE commute_dur_total > 0
-            """
+            SELECT s.stop_id, s.stop_name,
+                   COALESCE(SUM(ST_Length(
+                       ST_Intersection(
+                           ST_Transform(w.geometry, 'EPSG:4326', 'EPSG:32614'),
+                           ST_Buffer(
+                               ST_Transform(ST_Point(s.stop_lon, s.stop_lat), 'EPSG:4326', 'EPSG:32614'),
+                               100
+                           )
+                       )
+                   )), 0)::DOUBLE AS sidewalk_m_100m
+            FROM {stops_tbl} s
+            LEFT JOIN {walkways_tbl} w
+                ON ST_DWithin(
+                    ST_Transform(ST_Point(s.stop_lon, s.stop_lat), 'EPSG:4326', 'EPSG:32614'),
+                    ST_Transform(w.geometry, 'EPSG:4326', 'EPSG:32614'),
+                    100
+                )
+            WHERE s.feed_id = :feed_id
+            GROUP BY s.stop_id, s.stop_name
+            """,
+            {"feed_id": self._feed_id},
         )
-        if census_df.empty:
-            return census_df
-
-        # Compute weighted median commute duration from census bins.
-        bin_midpoints = {
-            "commute_dur_lt15": 7.5,
-            "commute_dur_15_29": 22.0,
-            "commute_dur_30_44": 37.0,
-            "commute_dur_45_59": 52.0,
-            "commute_dur_60_plus": 75.0,
-        }
-        weighted_sum = pd.Series(0.0, index=census_df.index)
-        for col, midpoint in bin_midpoints.items():
-            weighted_sum = weighted_sum + census_df[col].fillna(0) * midpoint
-        census_df["census_mean_commute_min"] = (
-            weighted_sum / census_df["commute_dur_total"]
-        ).round(1)
-
-        # Join r5py P50 transit travel time if available
-        if self._db.relation_exists(transit_matrix_table):
-            r5py_df = self._db.query(
-                f"""
-                SELECT from_id AS geo_uid,
-                       ROUND(AVG(travel_time_p50), 1) AS r5py_p50_travel_time_min
-                FROM {transit_matrix_table}
-                GROUP BY from_id
-                """
-            )
-            census_df = census_df.merge(r5py_df, on="geo_uid", how="left")
-
-        return census_df
-
-    def departure_demand_vs_gtfs_supply(self) -> pd.DataFrame:
-        """Overlay census departure time distribution on GTFS departure frequency.
-
-        Computes hourly departure demand from census Journey to Work departure
-        time bins and compares with GTFS scheduled hourly departures.
-
-        Returns:
-            DataFrame with hour, census_demand_pct, gtfs_departures.
-            Empty DataFrame if census data is missing.
-        """
-        census_table = self._table("census_da")
-        if not self._db.relation_exists(census_table):
-            return pd.DataFrame()
-
-        # Aggregate departure time distribution across all Winnipeg DAs
-        departure_df = self._db.query(
-            f"""
-            SELECT SUM(depart_total) AS total,
-                   SUM(depart_5am) AS h5,
-                   SUM(depart_6am) AS h6,
-                   SUM(depart_7am) AS h7,
-                   SUM(depart_8am) AS h8,
-                   SUM(depart_9_11am) AS h9_11,
-                   SUM(depart_12_4am) AS h12_4
-            FROM {census_table}
-            WHERE depart_total > 0
-            """
-        )
-        if departure_df.empty or departure_df["total"].iloc[0] == 0:
-            return pd.DataFrame()
-
-        total = departure_df["total"].iloc[0]
-        demand_rows = [
-            {"hour_label": "5:00-5:59", "hour": 5, "census_demand_pct": round(100 * departure_df["h5"].iloc[0] / total, 1)},
-            {"hour_label": "6:00-6:59", "hour": 6, "census_demand_pct": round(100 * departure_df["h6"].iloc[0] / total, 1)},
-            {"hour_label": "7:00-7:59", "hour": 7, "census_demand_pct": round(100 * departure_df["h7"].iloc[0] / total, 1)},
-            {"hour_label": "8:00-8:59", "hour": 8, "census_demand_pct": round(100 * departure_df["h8"].iloc[0] / total, 1)},
-            {"hour_label": "9:00-11:59", "hour": 10, "census_demand_pct": round(100 * departure_df["h9_11"].iloc[0] / total, 1)},
-            {"hour_label": "12:00-4:59", "hour": 14, "census_demand_pct": round(100 * departure_df["h12_4"].iloc[0] / total, 1)},
-        ]
-        demand = pd.DataFrame(demand_rows)
-
-        # Join GTFS hourly departure counts if frequency view exists
-        freq_view = self._table("route_hourly_departures")
-        if self._db.relation_exists(freq_view):
-            gtfs_hourly = self._db.query(
-                f"""
-                SELECT hour,
-                       SUM(departures) AS gtfs_departures
-                FROM {freq_view}
-                WHERE feed_id = :feed_id
-                GROUP BY hour
-                ORDER BY hour
-                """,
-                {"feed_id": self._feed_id},
-            )
-            if not gtfs_hourly.empty:
-                demand = demand.merge(gtfs_hourly, on="hour", how="left")
-
-        return demand
-
-    def commute_destination_analysis(self) -> pd.DataFrame:
-        """Census commute destination geography per DA.
-
-        Classifies commuters by destination: within CSD (intra-city),
-        different CSD same CD (suburban), different CD, different province.
-
-        Returns:
-            DataFrame with DA-level commute destination breakdown.
-        """
-        census_table = self._table("census_da")
-        if not self._db.relation_exists(census_table):
-            return pd.DataFrame()
-
-        return self._db.query(
-            f"""
-            SELECT geo_uid,
-                   commute_dest_total,
-                   commute_within_csd,
-                   commute_diff_csd_same_cd,
-                   commute_diff_cd,
-                   commute_diff_province,
-                   ROUND(100.0 * commute_within_csd / NULLIF(commute_dest_total, 0), 1)
-                       AS pct_within_city,
-                   ROUND(100.0 * commute_diff_csd_same_cd / NULLIF(commute_dest_total, 0), 1)
-                       AS pct_suburban,
-                   ROUND(100.0 * (commute_diff_cd + commute_diff_province)
-                       / NULLIF(commute_dest_total, 0), 1)
-                       AS pct_external
-            FROM {census_table}
-            WHERE commute_dest_total > 0
-            """
-        )
+        if result.empty:
+            return result
+        result["is_phantom_coverage"] = result["sidewalk_m_100m"] < 200
+        return result
 
     def modal_share_by_neighbourhood(self) -> pd.DataFrame:
-        """Census 2021 commute mode split aggregated by neighbourhood.
-
-        Includes car_driver/car_passenger split from CHASS data. Requires
-        the ``census_by_neighbourhood`` SQL view.
-
-        Returns:
-            DataFrame with neighbourhood-level modal share percentages.
-        """
+        """Census 2021 commute mode split aggregated by neighbourhood."""
         view_name = self._table("census_by_neighbourhood")
         if not self._db.relation_exists(view_name):
             return pd.DataFrame()
-
         return self._db.query(
             f"""
-            SELECT neighbourhood_id,
-                   neighbourhood,
-                   population_total,
-                   pct_commute_public_transit,
-                   pct_commute_car,
-                   pct_commute_walk,
-                   pct_commute_cycle,
-                   pct_commute_other,
+            SELECT neighbourhood_id, neighbourhood, population_total,
+                   pct_commute_public_transit, pct_commute_car,
+                   pct_commute_walk, pct_commute_cycle, pct_commute_other,
                    median_household_income_2020
             FROM {view_name}
             ORDER BY pct_commute_public_transit DESC
             """
         )
 
-    def population_stability_map_data(self) -> pd.DataFrame:
-        """One-year mobility status per DA for newcomer/stability analysis.
-
-        Uses CHASS mobility variables to identify DAs with high population
-        turnover (movers) and external migration (newcomers).
-
-        Returns:
-            DataFrame with DA-level mobility percentages.
-            Empty DataFrame if census data is missing.
-        """
-        census_table = self._table("census_da")
-        if not self._db.relation_exists(census_table):
+    def build_neighbourhood_classification_feature_table(self) -> pd.DataFrame:
+        """Build census-based neighbourhood feature table for coverage classification."""
+        access_view = self._table("neighbourhood_transit_access_metrics")
+        census_view = self._table("census_by_neighbourhood")
+        if not (self._db.relation_exists(access_view) and self._db.relation_exists(census_view)):
             return pd.DataFrame()
-
         return self._db.query(
             f"""
-            SELECT geo_uid,
-                   population_2021,
-                   mobility_1yr_total,
-                   mobility_1yr_nonmovers,
-                   mobility_1yr_movers,
-                   mobility_1yr_external,
-                   ROUND(100.0 * mobility_1yr_movers / NULLIF(mobility_1yr_total, 0), 1)
-                       AS pct_movers,
-                   ROUND(100.0 * mobility_1yr_external / NULLIF(mobility_1yr_total, 0), 1)
-                       AS pct_external_migrants,
-                   pct_immigrant,
-                   pct_visible_minority
-            FROM {census_table}
-            WHERE mobility_1yr_total > 0
-            """
+            SELECT a.neighbourhood_id, a.neighbourhood, a.density_category,
+                   c.population_density_per_km2, c.pct_commute_public_transit,
+                   c.median_household_income_2020, c.pct_seniors_65_plus,
+                   c.pct_recent_immigrants, c.pct_commute_car,
+                   c.pct_commute_walk, c.pct_commute_cycle
+            FROM {access_view} a
+            LEFT JOIN {census_view} c ON a.neighbourhood_id = c.neighbourhood_id
+            WHERE a.feed_id = :feed_id
+            ORDER BY a.neighbourhood
+            """,
+            {"feed_id": self._feed_id},
         )
-
-    # ------------------------------------------------------------------
-    # r5py integration
-    # ------------------------------------------------------------------
-
-    def r5py_accessibility_summary(self) -> pd.DataFrame:
-        """Summarize r5py transit travel times by neighbourhood.
-
-        Returns empty frame when r5py tables don't exist (graceful degradation).
-        """
-        matrix = self.transit_matrix()
-        if matrix.empty:
-            return pd.DataFrame()
-        p50_col = "travel_time_p50" if "travel_time_p50" in matrix.columns else matrix.columns[-1]
-        bridge = self.stop_neighbourhood_bridge()
-        if bridge.empty:
-            return pd.DataFrame()
-        merged = matrix.merge(
-            bridge.rename(columns={"stop_id": "from_id", "neighbourhood": "origin_neighbourhood"}),
-            on="from_id",
-            how="left",
-        )
-        return (
-            merged.groupby("origin_neighbourhood")[p50_col]
-            .agg(["median", "mean", "count"])
-            .reset_index()
-            .rename(columns={
-                "origin_neighbourhood": "neighbourhood",
-                "median": "median_travel_time_p50",
-                "mean": "mean_travel_time_p50",
-                "count": "od_pair_count",
-            })
-        )
-
-    def jobs_reachable_by_neighbourhood(self) -> pd.DataFrame:
-        """Jobs reachable within 45 min by transit, per neighbourhood."""
-        return self.jobs_reachable()
-
-    def combined_jobs_access(self) -> pd.DataFrame:
-        """neighbourhood_jobs_access_metrics enriched with r5py jobs_reachable when available."""
-        base = self.neighbourhood_jobs_access()
-        r5py = self.jobs_reachable_by_neighbourhood()
-        if r5py.empty:
-            return base
-        join_col = "neighbourhood" if "neighbourhood" in r5py.columns else r5py.columns[0]
-        return base.merge(r5py, on=join_col, how="left")
-
-    # ------------------------------------------------------------------
-    # PR2 analysis stubs — Sudipta
-    # ------------------------------------------------------------------
-
-    def travel_time_equity_report(self) -> pd.DataFrame:
-        """Compare r5py travel times across income/demographic quintiles.
-
-        Returns:
-            DataFrame with quintile, median_travel_time, pct_over_45min.
-
-        Hint:
-            # 1. Load ywg_transit_matrix_{feed} (r5py P50 travel times)
-            # 2. Load ywg_census_da (median_total_income, pct_visible_minority)
-            # 3. pd.qcut(income, 5) → income_quintile
-            # 4. Group travel times by quintile, compute median + pct > 45 min
-        """
-        return pd.DataFrame()
-
-    def poverty_transit_correlation(self) -> pd.DataFrame:
-        """Correlate LICO-AT poverty rate with transit access metrics.
-
-        Returns:
-            DataFrame with neighbourhood, lico_at_pct, stop_density, jobs_access_score.
-
-        Hint:
-            # 1. Load census_by_neighbourhood view (has lico_at_pct)
-            # 2. Join neighbourhood_stop_count_density on neighbourhood_id
-            # 3. Join neighbourhood_jobs_access_metrics on neighbourhood_id
-            # 4. Return merged table for scatter plot
-        """
-        return pd.DataFrame()
-
-    def build_equity_regression_table(self) -> pd.DataFrame:
-        """OLS regression: transit access ~ income + demographics.
-
-        Returns:
-            DataFrame with coefficient, std_err, p_value, r_squared.
-
-        Hint:
-            # 1. Build X matrix: median_total_income, pct_indigenous,
-            #    pct_visible_minority, pct_renter (from census_by_neighbourhood)
-            # 2. Y = stop_density or jobs_access_score
-            # 3. statsmodels.api.OLS(Y, sm.add_constant(X)).fit()
-            # 4. Return summary_frame() + rsquared
-        """
-        return pd.DataFrame()
-
-    def build_spatial_autocorrelation_table(self) -> pd.DataFrame:
-        """Compute Moran's I and LISA clusters for stop density.
-
-        Returns:
-            DataFrame with neighbourhood, lisa_cluster, lisa_p_value, local_i.
-
-        Hint:
-            # 1. Load neighbourhood geometries + stop_density
-            # 2. libpysal.weights.Queen.from_dataframe(gdf)
-            # 3. esda.Moran(density, w) → global I
-            # 4. esda.Moran_Local(density, w) → LISA clusters (HH/HL/LH/LL)
-        """
-        return pd.DataFrame()
-
-    def cluster_neighbourhoods(self, k: int = 4) -> pd.DataFrame:
-        """K-means clustering of neighbourhoods by transit service profile.
-
-        Args:
-            k: Number of clusters.
-
-        Returns:
-            DataFrame with neighbourhood, cluster_id, stop_density,
-            mean_headway, jobs_access_score.
-
-        Hint:
-            # 1. Build feature matrix: stop_density, mean_headway, jobs_access
-            # 2. StandardScaler().fit_transform(X)
-            # 3. KMeans(n_clusters=k).fit(X_scaled)
-            # 4. Attach cluster labels to neighbourhood table
-        """
-        return pd.DataFrame()
 
 
 def categorize_coverage(density: float) -> str:

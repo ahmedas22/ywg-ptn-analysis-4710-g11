@@ -21,6 +21,6 @@ repos:
     hooks:
       - id: project-smoke
         name: project-smoke
-        entry: uv run python -c "from ptn_analysis.reporting import REPORT_NOTEBOOKS; from ptn_analysis.context.serving import Dashboard; assert REPORT_NOTEBOOKS; print('project smoke ok')"
+        entry: uv run python -c "from ptn_analysis.context.reporting import REPORT_NOTEBOOKS; from ptn_analysis.context.serving import Dashboard; assert REPORT_NOTEBOOKS; print('project smoke ok')"
         language: system
         pass_filenames: false

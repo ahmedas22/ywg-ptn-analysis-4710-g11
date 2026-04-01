@@ -12,10 +12,11 @@ from typing import Final
 
 from loguru import logger
 import pandas as pd
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
+from ptn_analysis.analysis.base import AnalyzerBase
 from ptn_analysis.context.config import DEFAULT_ANALYSIS_DATE, PTN_HEADWAY_TARGETS
 from ptn_analysis.context.db import TransitDB
-from ptn_analysis.analysis.base import AnalyzerBase
 
 MODELS_DIR: Final[Path] = Path(__file__).parents[2] / "models" / "production"
 
@@ -29,7 +30,8 @@ _ACTIVE_SERVICES_CTE = """
     active_services AS (
         SELECT service_id
         FROM {calendar_table}
-        WHERE CAST(:service_date AS DATE) BETWEEN
+        WHERE feed_id = :feed_id
+          AND CAST(:service_date AS DATE) BETWEEN
               COALESCE(
                   TRY_STRPTIME(CAST(start_date AS VARCHAR), '%Y%m%d')::DATE,
                   TRY_CAST(start_date AS DATE)
@@ -123,7 +125,7 @@ class FrequencyAnalyzer(AnalyzerBase):
             )
             if detected_date:
                 return str(detected_date)
-        except Exception:
+        except (OperationalError, ProgrammingError):
             logger.debug("Could not detect service date from route metrics.")
 
         try:
@@ -138,7 +140,7 @@ class FrequencyAnalyzer(AnalyzerBase):
                     day = raw_text[6:8]
                     return f"{year}-{month}-{day}"
                 return raw_text
-        except Exception:
+        except (OperationalError, ProgrammingError):
             logger.debug("Could not detect service date from feed_info.")
 
         return DEFAULT_ANALYSIS_DATE
@@ -619,17 +621,15 @@ class FrequencyAnalyzer(AnalyzerBase):
         if self._db.count(capacity_view) is None:
             logger.warning("Route capacity priority view is missing. Run the data pipeline first.")
             return pd.DataFrame()
-        # upgrade_priority_score is computed in Python (build_capacity_priority_table),
-        # not in the SQL view. Order by passup rate proxy instead.
+        # Return ALL routes; scoring and limiting happen in build_capacity_priority_table.
         return self._db.query(
             f"""
             SELECT *
             FROM {capacity_view}
             WHERE feed_id = :feed_id
             ORDER BY passups_per_100k_boardings DESC NULLS LAST
-            LIMIT :top_n
             """,
-            {"feed_id": self._feed_id, "top_n": top_n},
+            {"feed_id": self._feed_id},
         )
 
     def calculate_route_reliability(self) -> pd.DataFrame:
@@ -697,7 +697,7 @@ class FrequencyAnalyzer(AnalyzerBase):
         """
         import numpy as np
 
-        df = self.calculate_capacity_stress(top_n=top_n)
+        df = self.calculate_capacity_stress()
         if df.empty:
             return df
 
@@ -724,8 +724,8 @@ class FrequencyAnalyzer(AnalyzerBase):
                 )
                 df["passup_risk_score"] = nb_model.predict(exog)
                 df["upgrade_priority_score"] = df["passup_risk_score"]
-            except Exception:
-                logger.warning("NegBin model load failed; using heuristic scoring.")
+            except (FileNotFoundError, ImportError, ValueError, KeyError) as exc:
+                logger.warning(f"NegBin model load failed ({exc!r}); using heuristic scoring.")
                 df = self._compute_fallback_priority_score(df)
         else:
             # Heuristic fallback: log-scaled passup rate weighted by headway penalty
@@ -740,7 +740,8 @@ class FrequencyAnalyzer(AnalyzerBase):
         df["recommendation"] = df["upgrade_priority_score"].apply(
             lambda v: "LRT Candidate" if v >= q85 else ("BRT Candidate" if v >= q50 else "Bus Ops Tuning")
         )
-        return df.sort_values("upgrade_priority_score", ascending=False)
+        df = df.sort_values("upgrade_priority_score", ascending=False)
+        return df.head(top_n) if top_n else df
 
     def _compute_fallback_priority_score(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute heuristic upgrade_priority_score when NegBin model is absent.
@@ -781,22 +782,172 @@ class FrequencyAnalyzer(AnalyzerBase):
             {"feed_id": self._feed_id},
         )
 
-    def build_corridor_current_travel_time_comparison(self) -> pd.DataFrame:
-        """Build current corridor travel-time summary from trip-planner snapshots.
+    def temporal_evolution_metrics(self) -> pd.DataFrame:
+        """Compare schedule metrics across all available GTFS feeds.
 
-        Reads ``data/reference/corridor_sample_pairs.csv`` and the
-        ``ywg_transit_trip_plans`` live-transit table to produce per-corridor
-        timing breakdowns.
+        Computes per-feed aggregate headway, stop count, route count
+        and network density. Used for 4-feed temporal trend charts.
 
         Returns:
-            DataFrame with columns: corridor_name, plan_total_minutes,
-            plan_walking_minutes, plan_waiting_minutes, plan_riding_minutes,
-            snapshot_timestamp.
-
-        Raises:
-            NotImplementedError: Until live transit bootstrap has been run.
+            DataFrame with feed_id, avg_headway, median_headway,
+            stop_count, route_count, network_density per PTN tier.
         """
-        return pd.DataFrame()
+        metrics_tbl = self._table("route_schedule_metrics")
+        stops_tbl = self._table("stops")
+        routes_tbl = self._table("routes")
+        tiers_view = self._table("route_ptn_tiers")
+        if not all(
+            self._db.relation_exists(t)
+            for t in (metrics_tbl, stops_tbl, routes_tbl, tiers_view)
+        ):
+            return pd.DataFrame()
+
+        return self._db.query(
+            f"""
+            WITH feed_tier_stats AS (
+                SELECT
+                    m.feed_id,
+                    COALESCE(t.ptn_tier, 'Community') AS ptn_tier,
+                    AVG(m.mean_headway_minutes) AS avg_headway,
+                    MEDIAN(m.mean_headway_minutes) AS median_headway,
+                    COUNT(DISTINCT m.route_id) AS route_count,
+                    SUM(m.scheduled_trip_count) AS total_trips
+                FROM {metrics_tbl} m
+                LEFT JOIN {tiers_view} t
+                    ON m.feed_id = t.feed_id AND m.route_id = t.route_id
+                GROUP BY m.feed_id, COALESCE(t.ptn_tier, 'Community')
+            ),
+            feed_stops AS (
+                SELECT feed_id, COUNT(DISTINCT stop_id) AS stop_count
+                FROM {stops_tbl}
+                GROUP BY feed_id
+            )
+            SELECT
+                fts.feed_id,
+                fts.ptn_tier,
+                fts.avg_headway,
+                fts.median_headway,
+                fts.route_count,
+                fts.total_trips,
+                fs.stop_count
+            FROM feed_tier_stats fts
+            LEFT JOIN feed_stops fs ON fts.feed_id = fs.feed_id
+            ORDER BY fts.feed_id, fts.ptn_tier
+            """
+        )
+
+    def boarding_pattern_analysis(self) -> pd.DataFrame:
+        """Analyze passenger boarding patterns by route and time of day.
+
+        Uses the 2.3M passenger count records to identify route-level
+        temporal demand patterns (AM peak, midday, PM peak, evening).
+
+        Returns:
+            DataFrame with route_number, day_type, time_period,
+            avg_boardings, avg_alightings, load_factor_proxy.
+        """
+        counts_tbl = self._table("passenger_counts")
+        if not self._db.relation_exists(counts_tbl):
+            return pd.DataFrame()
+
+        return self._db.query(
+            f"""
+            SELECT
+                route_number,
+                day_type,
+                CASE
+                    WHEN TRY_CAST(SPLIT_PART(time_period, '-', 1) AS INTEGER) BETWEEN 6 AND 8 THEN 'AM Peak'
+                    WHEN TRY_CAST(SPLIT_PART(time_period, '-', 1) AS INTEGER) BETWEEN 9 AND 14 THEN 'Midday'
+                    WHEN TRY_CAST(SPLIT_PART(time_period, '-', 1) AS INTEGER) BETWEEN 15 AND 17 THEN 'PM Peak'
+                    WHEN TRY_CAST(SPLIT_PART(time_period, '-', 1) AS INTEGER) BETWEEN 18 AND 21 THEN 'Evening'
+                    ELSE 'Off-Peak'
+                END AS period,
+                AVG(TRY_CAST(average_boardings AS DOUBLE)) AS avg_boardings,
+                AVG(TRY_CAST(average_alightings AS DOUBLE)) AS avg_alightings,
+                COUNT(*) AS observation_count
+            FROM {counts_tbl}
+            WHERE average_boardings IS NOT NULL
+            GROUP BY route_number, day_type,
+                CASE
+                    WHEN TRY_CAST(SPLIT_PART(time_period, '-', 1) AS INTEGER) BETWEEN 6 AND 8 THEN 'AM Peak'
+                    WHEN TRY_CAST(SPLIT_PART(time_period, '-', 1) AS INTEGER) BETWEEN 9 AND 14 THEN 'Midday'
+                    WHEN TRY_CAST(SPLIT_PART(time_period, '-', 1) AS INTEGER) BETWEEN 15 AND 17 THEN 'PM Peak'
+                    WHEN TRY_CAST(SPLIT_PART(time_period, '-', 1) AS INTEGER) BETWEEN 18 AND 21 THEN 'Evening'
+                    ELSE 'Off-Peak'
+                END
+            ORDER BY route_number, day_type, period
+            """
+        )
+
+    def reliability_profile(self) -> pd.DataFrame:
+        """Build route-level reliability profile from on-time performance data.
+
+        Uses the 5.6M on-time records to compute per-route reliability
+        metrics: on-time percentage, mean/std deviation, worst hours.
+
+        Returns:
+            DataFrame with route_short_name, ptn_tier, pct_on_time,
+            mean_deviation_sec, std_deviation_sec, measurement_count,
+            worst_hour, worst_hour_pct_on_time.
+        """
+        reliability_tbl = self._table("route_reliability_metrics")
+        hourly_tbl = self._table("v_ontime_performance")
+        if not self._db.relation_exists(reliability_tbl):
+            return pd.DataFrame()
+
+        base = self._db.query(
+            f"""
+            SELECT
+                feed_id,
+                route_short_name,
+                ptn_tier,
+                pct_on_time,
+                mean_deviation_sec,
+                std_deviation_sec,
+                measurement_count
+            FROM {reliability_tbl}
+            WHERE feed_id = :feed_id
+            ORDER BY pct_on_time ASC
+            """,
+            {"feed_id": self._feed_id},
+        )
+        if base.empty:
+            return base
+
+        # Enrich with worst-hour analysis if OTP view exists
+        if self._db.relation_exists(hourly_tbl):
+            try:
+                worst_hours = self._db.query(
+                    f"""
+                    WITH hourly AS (
+                        SELECT
+                            route_number,
+                            EXTRACT(HOUR FROM TRY_CAST(scheduled_time AS TIMESTAMP)) AS hour,
+                            SUM(CASE WHEN ABS(TRY_CAST(deviation AS DOUBLE)) <= 60 THEN 1 ELSE 0 END)
+                                * 100.0 / NULLIF(COUNT(*), 0) AS hourly_pct_on_time,
+                            COUNT(*) AS hourly_count
+                        FROM {hourly_tbl}
+                        WHERE ptn_era = 'post_ptn'
+                          AND deviation IS NOT NULL
+                        GROUP BY route_number, EXTRACT(HOUR FROM TRY_CAST(scheduled_time AS TIMESTAMP))
+                    )
+                    SELECT route_number AS route_short_name,
+                           hour AS worst_hour,
+                           hourly_pct_on_time AS worst_hour_pct_on_time
+                    FROM (
+                        SELECT *, ROW_NUMBER() OVER (PARTITION BY route_number ORDER BY hourly_pct_on_time ASC) AS rn
+                        FROM hourly
+                        WHERE hourly_count >= 10
+                    )
+                    WHERE rn = 1
+                    """
+                )
+                if not worst_hours.empty:
+                    base = base.merge(worst_hours, on="route_short_name", how="left")
+            except (OperationalError, ProgrammingError):
+                pass
+
+        return base
 
     def build_neighbourhood_classification_feature_table(self) -> pd.DataFrame:
         """Build census-based neighbourhood feature table for coverage classification.
@@ -811,8 +962,32 @@ class FrequencyAnalyzer(AnalyzerBase):
             density_category, population_density_per_km2,
             pct_commute_public_transit, median_household_income_2020,
             pct_seniors_65_plus.
-
-        Raises:
-            NotImplementedError: Until implemented.
         """
-        return pd.DataFrame()
+        access_view = self._table("neighbourhood_transit_access_metrics")
+        census_view = self._table("census_by_neighbourhood")
+        if not (self._db.relation_exists(access_view) and self._db.relation_exists(census_view)):
+            logger.warning("Neighbourhood classification features require access metrics and census views.")
+            return pd.DataFrame()
+
+        return self._db.query(
+            f"""
+            SELECT
+                a.neighbourhood_id,
+                a.neighbourhood,
+                a.density_category,
+                c.population_density_per_km2,
+                c.pct_commute_public_transit,
+                c.median_household_income_2020,
+                c.pct_seniors_65_plus,
+                c.pct_recent_immigrants,
+                c.pct_commute_car,
+                c.pct_commute_walk,
+                c.pct_commute_cycle
+            FROM {access_view} a
+            LEFT JOIN {census_view} c
+                ON a.neighbourhood_id = c.neighbourhood_id
+            WHERE a.feed_id = :feed_id
+            ORDER BY a.neighbourhood
+            """,
+            {"feed_id": self._feed_id},
+        )

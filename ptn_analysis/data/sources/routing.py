@@ -21,12 +21,10 @@ from ptn_analysis.context.config import (
     R5_DEPARTURE_WINDOW_MINUTES,
     R5_ISOCHRONE_MINUTES,
     R5_PERCENTILES,
-    ROUTING_CACHE_DIR,
     WGS84_CRS,
 )
 from ptn_analysis.context.db import TransitDB
-from ptn_analysis.context.http import Downloader
-
+from ptn_analysis.context.http import DataClient
 
 # ---------------------------------------------------------------------------
 # OSM PBF download
@@ -54,7 +52,7 @@ def download_osm_pbf(
 
     logger.info(f"Downloading OSM PBF from {url}")
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    downloader = Downloader()
+    downloader = DataClient()
     downloader.request(
         url,
         cache_path=dest_path,
@@ -485,7 +483,7 @@ class FeedAssetRegistry:
 
         # Alias: pre_ptn → pick the most recent pre-PTN archive
         if feed_id == "pre_ptn":
-            from ptn_analysis.data.sources.gtfs import pick_archive, download_archive
+            from ptn_analysis.data.sources.gtfs import pick_archive
 
             archive_date = pick_archive(pre_ptn=True)
             if archive_date is None:

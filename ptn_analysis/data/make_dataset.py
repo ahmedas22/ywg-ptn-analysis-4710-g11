@@ -157,8 +157,9 @@ def validate() -> None:
 @history_app.command("list")
 def history_list() -> None:
     """List available historical GTFS archives."""
-    pipeline = get_pipeline()
-    archive_dates = pipeline.gtfs.available_archives()
+    from ptn_analysis.data.sources import gtfs as gtfs_mod
+
+    archive_dates = gtfs_mod.available_archives()
     console.print(f"Found [bold]{len(archive_dates)}[/] archives:")
     for archive_date in archive_dates:
         console.print(f"  {archive_date}")
@@ -187,11 +188,23 @@ def history_load(archive_date: str) -> None:
     Args:
         archive_date: Archive date in ``YYYY-MM-DD`` format.
     """
+    from ptn_analysis.data.sources import gtfs as gtfs_mod
+
     pipeline = get_pipeline()
-    feed = pipeline.gtfs.read_feed(pipeline.gtfs.download_archive(archive_date))
-    raw_results = pipeline.gtfs.load_archive(archive_date, archive_date, feed)
+    feed = gtfs_mod.read_feed(gtfs_mod.download_archive(archive_date))
+    raw_results = gtfs_mod.load_archive(pipeline.city_key, pipeline.db, archive_date, archive_date, feed)
     metric_results = pipeline.build_derived_tables()
     for name, count in {**raw_results, **metric_results}.items():
+        console.print(f"[green]{name}[/]: {count:,}")
+
+
+@app.command()
+def snapshot() -> None:
+    """Build parquet cache from existing raw open data files."""
+    from ptn_analysis.data.sources import open_data as od
+
+    results = od.snapshot_to_parquet("ywg")
+    for name, count in results.items():
         console.print(f"[green]{name}[/]: {count:,}")
 
 

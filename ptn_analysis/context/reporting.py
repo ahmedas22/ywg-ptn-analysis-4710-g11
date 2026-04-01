@@ -85,6 +85,25 @@ REPORT_NOTEBOOKS: dict[str, dict[str, dict[str, list[str]]]] = {
             ],
         },
     },
+    "final": {
+        "0.5-ahmed-final-association": {
+            "figures": [
+                "association_rules_network.png",
+            ],
+        },
+        "0.6-ahmed-final-evaluation": {
+            "figures": [
+                "model_evaluation_combined.png",
+            ],
+        },
+        "0.7-ahmed-final-poverty": {
+            "figures": [
+                "equity_quintile.png",
+                "poverty_correlation.png",
+                "counterfactual_rerank.png",
+            ],
+        },
+    },
 }
 
 

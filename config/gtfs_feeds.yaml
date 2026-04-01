@@ -1,0 +1,123 @@
+# GTFS Feed Manifest — defines the temporal snapshot set for analysis.
+#
+# Each entry specifies a feed to download, its era classification,
+# and the provider priority chain. Providers are tried in order;
+# the first success wins.
+#
+# Providers:
+#   mobility_data — MobilityData Mobility Database API (OAuth2, global)
+#   wtlivewpg     — wtlivewpg.com community GTFS archive (Winnipeg only)
+#   direct        — Direct URL download (single feed)
+#
+# MobilityData is PRIMARY for all feeds. wtlivewpg is fallback.
+# MobilityData may have historical feeds even for pre-Feb 2024 dates.
+
+feeds:
+  # ── Winnipeg: deep baseline ──────────────────────────────────────
+  - snapshot_id: "2023-09-03"
+    city_key: ywg
+    era: pre_ptn
+    target_service_date: "2023-09-03"
+    description: "Fall 2023 baseline (pre-pandemic recovery)"
+    providers:
+      - type: mobility_data
+        selector: service_date
+      - type: wtlivewpg
+        archive_date: "2023-09-03"
+
+  # ── Winnipeg: pre-PTN period ─────────────────────────────────────
+  - snapshot_id: "2024-09-01"
+    city_key: ywg
+    era: pre_ptn
+    target_service_date: "2024-09-01"
+    description: "Fall 2024 pre-PTN"
+    providers:
+      - type: mobility_data
+        selector: service_date
+      - type: wtlivewpg
+        archive_date: "2024-09-01"
+
+  - snapshot_id: "2024-12-15"
+    city_key: ywg
+    era: pre_ptn
+    target_service_date: "2024-12-15"
+    description: "Winter 2024 pre-PTN"
+    providers:
+      - type: mobility_data
+        selector: service_date
+      - type: wtlivewpg
+        archive_date: "2024-12-15"
+
+  # ── Winnipeg: transition ─────────────────────────────────────────
+  - snapshot_id: "2025-04-13"
+    city_key: ywg
+    era: pre_ptn
+    target_service_date: "2025-04-13"
+    description: "Spring 2025 pre-launch"
+    providers:
+      - type: mobility_data
+        selector: service_date
+      - type: wtlivewpg
+        archive_date: "2025-04-13"
+
+  # ── Winnipeg: PTN launch + post ──────────────────────────────────
+  - snapshot_id: "2025-06-29"
+    city_key: ywg
+    era: post_ptn
+    target_service_date: "2025-06-29"
+    description: "PTN launch day"
+    providers:
+      - type: mobility_data
+        selector: service_date
+      - type: wtlivewpg
+        archive_date: "2025-06-29"
+
+  - snapshot_id: "2025-08-31"
+    city_key: ywg
+    era: post_ptn
+    target_service_date: "2025-08-31"
+    description: "Summer 2025 post-PTN"
+    providers:
+      - type: mobility_data
+        selector: service_date
+      - type: wtlivewpg
+        archive_date: "2025-08-31"
+
+  - snapshot_id: "2025-12-14"
+    city_key: ywg
+    era: post_ptn
+    target_service_date: "2025-12-14"
+    description: "Winter 2025 post-PTN"
+    providers:
+      - type: mobility_data
+        selector: service_date
+      - type: wtlivewpg
+        archive_date: "2025-12-14"
+
+  # ── Winnipeg: current live ───────────────────────────────────────
+  - snapshot_id: current
+    city_key: ywg
+    era: post_ptn
+    target_service_date: current
+    description: "Current live feed"
+    providers:
+      - type: mobility_data
+        selector: latest
+      - type: direct
+        url: "https://gtfs.winnipegtransit.com/google_transit.zip"
+
+  # ── Edmonton: comparison ─────────────────────────────────────────
+  - snapshot_id: edmonton_current
+    city_key: yeg
+    era: comparison
+    target_service_date: current
+    description: "Edmonton latest for comparison"
+    providers:
+      - type: mobility_data
+        selector: latest
+
+# Known MobilityData feed IDs (pinned after discovery).
+# Update these after first successful API call.
+pinned_feed_ids:
+  ywg: mdb-717  # Winnipeg Transit (discovered 2026-03-18)
+  yeg: mdb-714  # Edmonton Transit Service (discovered 2026-03-18)

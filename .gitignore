@@ -1,29 +1,53 @@
-
+# Python
 __pycache__/
-.coverage
-.DS_Store
-.eggs/
-.env
-.idea/
-.ipynb_checkpoints
-.mypy_cache/
-.playwright-mcp/
-.pytest_cache/
-.ruff_cache/
-.venv
-.vscode/
+*.py[cod]
+*$py.class
+*.so
 *.egg
 *.egg-info/
+*.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv
+venv/
+
+# Testing
+.coverage
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+
+# Environment
+.env
+
+# OS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints
 *.executed.ipynb
-*.py[cod]
-*.so
-*$py.class
-/data/cache/
-/data/interim/*
-!/data/interim/wpg_transit.duckdb
-/data/pipeline.log
-/data/processed/*
-!/data/processed/wpg_transit_serving.duckdb
+
+# Ruff / Tools
+.ruff_cache/
+pal_generated.code
+AGENTS.md
+
+# Streamlit
+.streamlit/
+
+# UV
+.uv-cache/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Data - raw downloads (rebuilt by `make data`)
 /data/raw/**/*.geojson
 /data/raw/**/*.osm.pbf
 /data/raw/**/*.part
@@ -34,36 +58,25 @@ __pycache__/
 /data/raw/open_data/
 /data/raw/open_data/**/count_*.json
 /data/raw/open_data/**/pages/
-/site
-# Data - ignore local runtime and cache artifacts
-# data/exports/ — tracked via LFS
-# IDE
-# Jupyter
-# LaTeX build artifacts and compiled planning docs (only submitted reports are tracked)
-# local databases (DuckDBs tracked via LFS)
-# MkDocs
-# Models — artifacts rebuilt from notebooks, not committed
-# OS
-# Playwright MCP
-# Python
-# Raw data downloads that may reappear
-# reports/*/figures/ — tracked via LFS (reproducible PDFs)
-# Testing
-# Tools
-# Virtual environments
-# StatCan POW files too large for GitHub LFS (>2GB each) — strip to Winnipeg for final report
+
+# Data - working DB (too large for git; shared via Google Drive)
+/data/interim/*
+
+# Data - pipeline logs
+/data/pipeline.log
+
+# Data - processed (serving DB tracked explicitly below)
+/data/processed/*
+!/data/processed/wpg_transit_serving.duckdb
+
+# Data - large external CSVs not needed for pipeline
 data/external/census_pow_98100491.csv
 data/external/census_pow_98100492.csv
-AGENTS.md
-build/
-dist/
-docs/site/
-htmlcov/
+
+# Models — experiments are throwaway
 models/experiments/
-models/production/*.joblib
-models/production/*.pkl
-notebooks/data/processed/*.duckdb
-pal_generated.code
+
+# LaTeX build artifacts
 reports/**/.texpadtmp/
 reports/**/*.aux
 reports/**/*.fdb_latexmk
@@ -73,4 +86,24 @@ reports/**/*.out
 reports/**/*.synctex.gz
 reports/*/tables/**
 reports/pr2/PR2_TEAM_PLAN.pdf
-venv/
+
+# Notebooks
+notebooks/data/processed/*.duckdb
+
+# MkDocs
+/site
+docs/site/
+*.bak
+
+# Local scratch and volatile caches
+.tmp/
+tmp/
+/data/cache/
+main.aux
+main.log
+main.out
+main.pdf
+patch_sudipta.tex
+pydeck-test.png
+query_db.py
+streamlit-network.txt

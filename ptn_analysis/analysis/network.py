@@ -6,8 +6,8 @@ from loguru import logger
 import networkx as nx
 import pandas as pd
 
-from ptn_analysis.context.db import TransitDB
 from ptn_analysis.analysis.base import AnalyzerBase
+from ptn_analysis.context.db import TransitDB
 
 
 class NetworkAnalyzer(AnalyzerBase):
@@ -262,6 +262,23 @@ class NetworkAnalyzer(AnalyzerBase):
         frame = pd.DataFrame(rows)
         return frame.merge(self.stops_df()[["stop_id", "stop_name"]], on="stop_id", how="left")
 
+    def pagerank(self, alpha: float = 0.85) -> pd.DataFrame:
+        """Compute PageRank centrality for all stops.
+
+        Args:
+            alpha: Damping factor (default 0.85).
+
+        Returns:
+            DataFrame with stop_id, stop_name, pagerank_score columns.
+        """
+        graph = self.graph
+        if graph.number_of_nodes() == 0:
+            return pd.DataFrame(columns=["stop_id", "pagerank_score"])
+        pr = nx.pagerank(graph, alpha=alpha)
+        frame = pd.DataFrame(list(pr.items()), columns=["stop_id", "pagerank_score"])
+        frame = frame.sort_values("pagerank_score", ascending=False).reset_index(drop=True)
+        return frame.merge(self.stops_df()[["stop_id", "stop_name"]], on="stop_id", how="left")
+
     def top_hubs(self, n: int = 20, weighted: bool = False) -> pd.DataFrame:
         """Return top hub stops by degree or weighted degree.
 
@@ -459,28 +476,97 @@ class NetworkAnalyzer(AnalyzerBase):
         Returns:
             DataFrame with stop_id, stop_name, baseline_rank, current_rank,
             rank_change, total_degree_current, total_degree_baseline.
-
-        Hint:
-            # 1. self.top_hubs(n=top_n) for current feed
-            # 2. NetworkAnalyzer(..., baseline_feed_id, ...).top_hubs(n=top_n)
-            # 3. Assign rank columns (1..N) to each, merge on stop_id (outer)
-            # 4. rank_change = baseline_rank - current_rank (positive = improved)
         """
-        return pd.DataFrame()
+        current_hubs = self.top_hubs(n=top_n).copy()
+        if current_hubs.empty:
+            return pd.DataFrame()
+        current_hubs["current_rank"] = range(1, len(current_hubs) + 1)
+        current_hubs = current_hubs.rename(columns={"total_degree": "total_degree_current"})
+
+        baseline = NetworkAnalyzer(self._city_key, baseline_feed_id, self._db)
+        baseline_hubs = baseline.top_hubs(n=top_n).copy()
+        if not baseline_hubs.empty:
+            baseline_hubs["baseline_rank"] = range(1, len(baseline_hubs) + 1)
+            baseline_hubs = baseline_hubs.rename(columns={"total_degree": "total_degree_baseline"})
+
+        merged = current_hubs.merge(
+            baseline_hubs[["stop_id", "baseline_rank", "total_degree_baseline"]]
+            if not baseline_hubs.empty else pd.DataFrame(columns=["stop_id", "baseline_rank", "total_degree_baseline"]),
+            on="stop_id",
+            how="outer",
+        )
+        merged["rank_change"] = merged["baseline_rank"] - merged["current_rank"]
+        if "stop_name" not in merged.columns:
+            merged["stop_name"] = None
+        return merged[
+            ["stop_id", "stop_name", "baseline_rank", "current_rank",
+             "rank_change", "total_degree_current", "total_degree_baseline"]
+        ].sort_values("current_rank").reset_index(drop=True)
 
     def community_boundary_alignment(self) -> pd.DataFrame:
         """Compare Louvain communities against official neighbourhood boundaries.
 
         Returns:
             DataFrame with community_id, neighbourhood, overlap_ratio, stop_count.
-
-        Hint:
-            # 1. self.detect_communities() → community_id per stop
-            # 2. Join stops to neighbourhood_stop_count_density on feed_id
-            # 3. Group by (community_id, neighbourhood), count stops
-            # 4. overlap_ratio = group_count / community_total
         """
-        return pd.DataFrame()
+        communities = self.detect_communities()
+        if communities.empty:
+            return pd.DataFrame()
+
+        # Spatial join: map each stop to its neighbourhood via ywg_stops + ywg_neighbourhoods
+        stops_tbl = self._table("stops")
+        nb_tbl = self._table("neighbourhoods")
+        if not (self._db.relation_exists(stops_tbl) and self._db.relation_exists(nb_tbl)):
+            return pd.DataFrame()
+
+        stop_nb = self._db.query(
+            f"""
+            SELECT s.stop_id, n.name AS neighbourhood
+            FROM {stops_tbl} s
+            JOIN {nb_tbl} n
+                ON ST_Contains(n.geometry, ST_Point(s.stop_lon, s.stop_lat))
+            WHERE s.feed_id = :feed_id
+            """,
+            {"feed_id": self._feed_id},
+        )
+        if stop_nb.empty:
+            return pd.DataFrame()
+
+        merged = communities.merge(stop_nb, on="stop_id", how="left")
+        merged = merged.dropna(subset=["neighbourhood"])
+        if merged.empty:
+            return pd.DataFrame()
+
+        community_totals = merged.groupby("community_id")["stop_id"].count().rename("community_total")
+        grouped = (
+            merged.groupby(["community_id", "neighbourhood"])["stop_id"]
+            .count()
+            .rename("stop_count")
+            .reset_index()
+        )
+        grouped = grouped.merge(community_totals, on="community_id")
+        grouped["overlap_ratio"] = (grouped["stop_count"] / grouped["community_total"]).round(4)
+        return grouped[
+            ["community_id", "neighbourhood", "stop_count", "overlap_ratio"]
+        ].sort_values(["community_id", "overlap_ratio"], ascending=[True, False]).reset_index(drop=True)
+
+    def weighted_centrality_comparison(self, top_n: int = 20) -> pd.DataFrame:
+        """Return top_n stops with both unweighted and weighted betweenness.
+
+        Args:
+            top_n: Number of top stops to return (by unweighted betweenness).
+
+        Returns:
+            DataFrame with stop_id, stop_name, betweenness, weighted_betweenness.
+        """
+        unweighted = self.betweenness_centrality()[["stop_id", "betweenness"]]
+        weighted = self.weighted_betweenness_centrality()[["stop_id", "weighted_betweenness"]]
+        merged = unweighted.merge(weighted, on="stop_id")
+        stops = self.stops_df()[["stop_id", "stop_name"]]
+        merged = merged.merge(stops, on="stop_id")
+        return merged.nlargest(top_n, "betweenness")[
+            ["stop_id", "stop_name", "betweenness", "weighted_betweenness"]
+        ]
 
     def build_resilience_metrics_table(self) -> pd.DataFrame:
         """Compute network resilience metrics for the current feed.
@@ -488,14 +574,33 @@ class NetworkAnalyzer(AnalyzerBase):
         Returns:
             Single-row DataFrame with feed_id, num_components,
             largest_component_size, largest_component_pct, avg_shortest_path.
-
-        Hint:
-            # 1. self.graph.to_undirected()
-            # 2. nx.connected_components() → count + largest
-            # 3. nx.average_shortest_path_length(largest_subgraph)
-            # 4. largest_component_pct = 100 * len(largest) / total_nodes
         """
-        return pd.DataFrame()
+        graph = self.graph
+        if graph.number_of_nodes() == 0:
+            return pd.DataFrame()
+
+        undirected = graph.to_undirected()
+        components = list(nx.connected_components(undirected))
+        num_components = len(components)
+        largest = max(components, key=len)
+        total_nodes = graph.number_of_nodes()
+        largest_pct = round(100.0 * len(largest) / total_nodes, 2)
+
+        avg_path = None
+        if len(largest) > 1:
+            try:
+                subgraph = undirected.subgraph(largest)
+                avg_path = round(nx.average_shortest_path_length(subgraph), 4)
+            except nx.NetworkXError:
+                pass
+
+        return pd.DataFrame([{
+            "feed_id": self._feed_id,
+            "num_components": num_components,
+            "largest_component_size": len(largest),
+            "largest_component_pct": largest_pct,
+            "avg_shortest_path": avg_path,
+        }])
 
     def build_critical_stops_table(self, top_n: int = 20) -> pd.DataFrame:
         """Identify critical stops whose removal most fragments the network.
@@ -505,13 +610,14 @@ class NetworkAnalyzer(AnalyzerBase):
 
         Returns:
             DataFrame with feed_id, stop_id, stop_name, betweenness, criticality_rank.
-
-        Hint:
-            # 1. self.betweenness_centrality() → sorted descending
-            # 2. .head(top_n), assign criticality_rank = 1..N
-            # 3. Insert feed_id column
         """
-        return pd.DataFrame()
+        bc = self.betweenness_centrality()
+        if bc.empty:
+            return pd.DataFrame()
+        bc = bc.sort_values("betweenness", ascending=False).head(top_n).reset_index(drop=True)
+        bc.insert(0, "feed_id", self._feed_id)
+        bc["criticality_rank"] = range(1, len(bc) + 1)
+        return bc[["feed_id", "stop_id", "stop_name", "betweenness", "criticality_rank"]]
 
     def stats(self) -> dict[str, float | int]:
         """Return basic network statistics.
@@ -524,9 +630,20 @@ class NetworkAnalyzer(AnalyzerBase):
         average_degree = 0.0
         if node_count > 0:
             average_degree = sum(dict(graph.degree()).values()) / node_count
-        return {
+        result = {
             "node_count": node_count,
             "edge_count": graph.number_of_edges(),
             "density": nx.density(graph),
             "avg_degree": average_degree,
         }
+        try:
+            result["clustering_coefficient"] = nx.average_clustering(
+                graph.to_undirected()
+            )
+        except Exception:
+            result["clustering_coefficient"] = 0.0
+        try:
+            result["assortativity"] = nx.degree_assortativity_coefficient(graph)
+        except Exception:
+            result["assortativity"] = 0.0
+        return result

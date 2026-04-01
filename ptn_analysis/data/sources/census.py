@@ -14,10 +14,10 @@ which are simplified for display), giving accurate spatial intersects.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import ssl
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 import geopandas as gpd
 from loguru import logger

@@ -38,17 +38,39 @@ __all__ = [
     "headway_tier",
     # map helpers
     "WEB_MERCATOR",
+    "NEIGHBOURHOOD_STYLE",
+    "POINT_MARKER_STYLE",
+    "LABEL_STYLE",
     "add_consistent_basemap",
+    "plot_neighbourhood_base",
     # chart rendering
     "Plotter",
     "save_report_figure",
     "create_employment_access_change_chart",
-    "plot_metric_comparison_bar",
-    "plot_heatmap",
-    "plot_choropleth_change",
+    "plot_association_rules_network",
 ]
 
 WEB_MERCATOR = WEB_MERCATOR_CRS
+
+# Standard neighbourhood overlay style (used as **kwargs in neigh_gdf.plot())
+NEIGHBOURHOOD_STYLE = dict(
+    facecolor="#f7f7f7",
+    edgecolor="#999999",
+    linewidth=0.4,
+    alpha=0.6,
+)
+
+# Standard point-marker style
+POINT_MARKER_STYLE = dict(
+    edgecolor="gray",
+    linewidth=0.2,
+)
+
+# Standard label-annotation style
+LABEL_STYLE = dict(
+    fontweight="bold",
+    bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor="gray", alpha=0.85),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +78,19 @@ WEB_MERCATOR = WEB_MERCATOR_CRS
 # ---------------------------------------------------------------------------
 
 
-def add_consistent_basemap(ax, zoom: int = 11) -> None:
+def plot_neighbourhood_base(ax, neigh_gdf, **overrides):
+    """Plot the neighbourhood polygons as a background layer.
+
+    Args:
+        ax: Matplotlib axes.
+        neigh_gdf: GeoDataFrame of neighbourhood polygons (should be in EPSG:3857).
+        **overrides: Any NEIGHBOURHOOD_STYLE keys to override.
+    """
+    style = {**NEIGHBOURHOOD_STYLE, **overrides}
+    neigh_gdf.plot(ax=ax, **style)
+
+
+def add_consistent_basemap(ax, zoom: int = 12) -> None:
     """Apply the standard basemap style for matplotlib map figures.
 
     Args:
@@ -132,56 +166,68 @@ class Plotter:
         return f"Plotter(figures_dir={self.figures_dir}, dpi={self.dpi})"
 
     def save(self, fig, filename: str, override_dir: Path | None = None) -> Path:
+        """Save a figure to the configured directory."""
         out_dir = Path(override_dir) if override_dir else self.figures_dir
         return save_report_figure(fig, out_dir / filename, self.dpi)
 
     def employment_access_change(self, jobs_access_comparison_table: pd.DataFrame, top_n: int = 15):
+        """Create an employment access change chart."""
         return create_employment_access_change_chart(jobs_access_comparison_table, top_n=top_n)
 
 
-def plot_metric_comparison_bar(df: pd.DataFrame, metric: str, label: str, pre: str, post: str, title: str) -> tuple:
-    """Side-by-side bar chart comparing a metric before and after PTN."""
-    import numpy as np
+def plot_association_rules_network(
+    rules_df: pd.DataFrame,
+    min_lift: float = 1.0,
+    top_n: int = 30,
+) -> tuple:
+    """Render association rules as a network graph.
 
-    categories = df[label].tolist()
-    x = np.arange(len(categories))
-    width = 0.35
+    Nodes are itemset features, edges represent rules with width proportional
+    to lift and colour mapped to confidence.
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.bar(x - width / 2, df[pre], width, label=pre, color="#4C72B0", alpha=0.85)
-    ax.bar(x + width / 2, df[post], width, label=post, color="#DD8452", alpha=0.85)
-    ax.set_xticks(x)
-    ax.set_xticklabels(categories, rotation=45, ha="right", fontsize=8)
-    ax.set_title(title)
-    ax.set_ylabel(metric)
-    ax.legend()
-    fig.tight_layout()
-    return fig, ax
+    Args:
+        rules_df: DataFrame with ``antecedents``, ``consequents``,
+            ``support``, ``confidence``, ``lift`` columns.
+        min_lift: Minimum lift threshold for display.
+        top_n: Maximum rules to display.
 
+    Returns:
+        (fig, ax) tuple.
+    """
+    import networkx as nx
 
-def plot_heatmap(df: pd.DataFrame, origin: str, dest: str, value: str, title: str, cmap: str = "YlOrRd") -> tuple:
-    """Pivot heatmap for origin-destination matrices."""
-    pivot = df.pivot(index=origin, columns=dest, values=value)
-    fig, ax = plt.subplots(figsize=(10, 8))
-    im = ax.imshow(pivot.values, aspect="auto", cmap=cmap)
-    ax.set_xticks(range(len(pivot.columns)))
-    ax.set_yticks(range(len(pivot.index)))
-    ax.set_xticklabels(pivot.columns, rotation=45, ha="right", fontsize=7)
-    ax.set_yticklabels(pivot.index, fontsize=7)
-    plt.colorbar(im, ax=ax, label=value)
-    ax.set_title(title)
-    fig.tight_layout()
-    return fig, ax
+    filtered = rules_df[rules_df["lift"] >= min_lift].nlargest(top_n, "lift")
+    if filtered.empty:
+        fig, ax = plt.subplots(figsize=(10, 8))
+        ax.text(0.5, 0.5, "No rules above lift threshold", ha="center", va="center")
+        return fig, ax
 
+    G = nx.DiGraph()
+    for _, row in filtered.iterrows():
+        ant = ", ".join(sorted(row["antecedents"]))
+        cons = ", ".join(sorted(row["consequents"]))
+        G.add_edge(ant, cons, lift=row["lift"], confidence=row["confidence"])
 
-def plot_choropleth_change(gdf, value_col: str, title: str, cmap: str = "RdYlGn") -> tuple:
-    """Choropleth map showing change in a metric across neighbourhoods."""
-    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
-    gdf.plot(
-        column=value_col, cmap=cmap, linewidth=0.5, edgecolor="white",
-        legend=True, ax=ax, missing_kwds={"color": "lightgrey", "label": "No data"},
+    fig, ax = plt.subplots(figsize=(14, 10))
+    pos = nx.spring_layout(G, seed=42, k=2.0)
+    edges = G.edges(data=True)
+    widths = [e[2]["lift"] * 1.5 for e in edges]
+    colors = [e[2]["confidence"] for e in edges]
+
+    nx.draw_networkx_nodes(G, pos, ax=ax, node_size=800, node_color="#4C72B0", alpha=0.8)
+    nx.draw_networkx_edges(
+        G, pos, ax=ax, width=widths, edge_color=colors,
+        edge_cmap=plt.cm.YlOrRd, edge_vmin=0, edge_vmax=1,
+        arrowsize=15, alpha=0.7,
     )
-    ax.set_title(title, fontsize=13)
-    ax.set_axis_off()
+    nx.draw_networkx_labels(G, pos, ax=ax, font_size=7, font_weight="bold")
+    # Manual colorbar for confidence (nx edge collection is not ScalarMappable)
+    sm = plt.cm.ScalarMappable(cmap=plt.cm.YlOrRd, norm=plt.Normalize(0, 1))
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label="Confidence", shrink=0.6)
+    ax.set_title("Association Rules Network (edge width = lift)", fontsize=13)
+    ax.axis("off")
     fig.tight_layout()
     return fig, ax
+
+

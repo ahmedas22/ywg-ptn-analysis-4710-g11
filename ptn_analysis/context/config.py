@@ -60,14 +60,34 @@ GTFS_URL: str = os.getenv("GTFS_URL", "https://gtfs.winnipegtransit.com/google_t
 WPG_OPEN_DATA_URL: str = "https://data.winnipeg.ca"
 
 DATASETS: dict[str, str] = {
-    "neighbourhoods": "8k6x-xxsy",  # data.winnipeg.ca neighbourhood boundaries
-    "communities": "gfvw-fk34",  # data.winnipeg.ca community areas
-    "cycling": "kjd9-dvf5",  # data.winnipeg.ca cycling network paths
-    "walkways": "jdeq-xf3y",  # data.winnipeg.ca pedestrian walkways
-    "pass_ups": "mer2-irmb",  # data.winnipeg.ca transit pass-up incidents
-    "on_time": "gp3k-am4u",  # data.winnipeg.ca on-time performance
-    "passenger_counts": "bv6q-du26",  # data.winnipeg.ca passenger boarding counts
-    "census_poverty_2021": "ige9-5jxk",  # 2021 neighbourhood-level poverty (census)
+    # ── Core transit ──────────────────────────────────────────────────
+    "neighbourhoods": "8k6x-xxsy",  # neighbourhood boundaries
+    "communities": "gfvw-fk34",  # community areas
+    "cycling": "kjd9-dvf5",  # cycling network paths
+    "walkways": "jdeq-xf3y",  # pedestrian walkways
+    "pass_ups": "mer2-irmb",  # transit pass-up incidents
+    "on_time": "gp3k-am4u",  # on-time performance
+    "passenger_counts": "bv6q-du26",  # passenger boarding counts
+    "census_poverty_2021": "ige9-5jxk",  # 2021 neighbourhood poverty (census)
+    # ── Tier 1: equity & demographics ─────────────────────────────────
+    "poverty_mbm": "gg4w-peq6",  # higher poverty areas (MBM)
+    "census_transport_mode": "ijxa-tybv",  # mode of transportation
+    "census_visible_minority": "9cfd-qjwz",  # visible minority
+    "census_aboriginal": "n8bv-eizw",  # Aboriginal people
+    "development_permits": "w842-cdeb",  # development permits
+    "passup_heatmap": "22qd-q3sr",  # heat map transit pass-ups (city)
+    # ── Tier 2: planning & zoning ─────────────────────────────────────
+    "ourwpg_mixed_use_corridors": "t4kh-5gtd",  # OurWPG urban mixed use
+    "ourwpg_major_redev_sites": "piz6-n3at",  # OurWPG major redevelopment
+    "ourwpg_mature_communities": "5guk-f7xw",  # OurWPG mature communities
+    "ourwpg_regional_centres": "wv32-jdtk",  # OurWPG regional mixed use
+    "zoning_parcels": "dxrp-w6re",  # zoning by-law parcels
+    "city_population": "mhuw-u7yg",  # city population by neighbourhood
+    # ── Tier 3: supplementary ─────────────────────────────────────────
+    "bicycle_counts": "rgun-mmqs",  # bicycle count data
+    "census_labour_force": "pcyz-4rbx",  # labour force characteristics
+    "census_households": "nmk5-uwfw",  # household characteristics
+    "street_pavement": "enpg-8cug",  # street pavement condition
 }
 
 # SODA API pagination
@@ -132,8 +152,8 @@ H3_RESOLUTION: int = 8  # ~461 m hexagon side; TOD canonical scale
 WALK_BUFFER_M: float = 400.0  # TCQSM (TRB, 2013) pedestrian catchment
 BIKE_BUFFER_M: float = 500.0  # Conservative winter estimate; NACTO ideal = 800 m
 CIRCUITY_FACTOR: float = 1.3  # Iacono et al. (2010) network circuity adjustment
-WALKSCORE_DECAY_M: float = 400.0  # WalkScore Transit Score (2011) decay distance
 MAX_WALK_MINUTES: float = 10.0  # TCQSM maximum acceptable walk to transit stop
+LOUVAIN_SEED: int = 42  # Reproducible community detection
 WGS84_CRS: str = "EPSG:4326"
 WINNIPEG_PROJECTED_CRS: str = "EPSG:32614"
 WEB_MERCATOR_CRS: str = "EPSG:3857"
@@ -239,7 +259,6 @@ __all__ = [
     "WALK_BUFFER_M",
     "BIKE_BUFFER_M",
     "CIRCUITY_FACTOR",
-    "WALKSCORE_DECAY_M",
     "MAX_WALK_MINUTES",
     "OSM_PBF_PATH",
     "OSM_PBF_URL",
@@ -387,6 +406,43 @@ def headway_tier(headway: float) -> tuple[str, str, int]:
         if headway < threshold:
             return label, color, weight
     return ">60min", "#d73027", 2
+
+
+# ── MobilityData API ───────────────────────────────────────────────────
+MOBILITY_DATA_API_URL: str = "https://api.mobilitydatabase.org/v1"
+MOBILITY_DATA_REFRESH_TOKEN: str = os.getenv("MOBILITY_DATA_REFRESH_TOKEN", "")
+MOBILITY_DATA_CACHE_DIR: Path = CACHE_DATA_DIR / "mobility_data"
+
+# ── GTFS feed manifest ─────────────────────────────────────────────────
+GTFS_MANIFEST_PATH: Path = PROJ_ROOT / "config" / "gtfs_feeds.yaml"
+GTFS_FEEDS_DIR: Path = RAW_DATA_DIR / "gtfs_feeds"
+
+
+def load_gtfs_manifest() -> dict:
+    """Load the GTFS feed manifest from YAML.
+
+    Returns:
+        Parsed manifest dict with 'feeds' and 'pinned_feed_ids'.
+    """
+    import yaml
+
+    if not GTFS_MANIFEST_PATH.exists():
+        return {"feeds": [], "pinned_feed_ids": {}}
+    with open(GTFS_MANIFEST_PATH) as f:
+        return yaml.safe_load(f) or {"feeds": [], "pinned_feed_ids": {}}
+
+
+def gtfs_zip_path(city_key: str, snapshot_id: str) -> Path:
+    """Return the local path for a GTFS feed ZIP.
+
+    Args:
+        city_key: City namespace (e.g. "ywg").
+        snapshot_id: Snapshot identifier (e.g. "2024-09-01", "current").
+
+    Returns:
+        Path under data/raw/gtfs_feeds/{city_key}/{snapshot_id}.zip
+    """
+    return GTFS_FEEDS_DIR / city_key / f"{snapshot_id}.zip"
 
 
 # Note: Loguru uses stderr by default, which works for both CLI and notebooks.
