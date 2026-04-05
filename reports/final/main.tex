@@ -259,9 +259,23 @@ All five modules share a common interface and database connection, so the dashbo
 % FOCUS: Equity Deep Dive tab and Densification Alignment tab
 \subsection{Dashboard}
 
-An 8-tab Streamlit dashboard provides interactive exploration of the analytical results. The Overview tab presents summary metrics (route counts, stop counts, ridership changes). The Map tab renders the full transit network using PyDeck with colour-coded PTN tiers. Coverage/Equity overlays poverty rates against stop density and displays association rules. Network ranks hubs by betweenness and PageRank centrality and visualizes Louvain communities. Frequency shows temporal evolution of headways and an on-time performance heatmap. Live connects to the Winnipeg Transit API for real-time vehicle positions and service alerts. The Equity Deep Dive tab presents the income quintile analysis (Table~\ref{tab:quintile}) with interactive filtering by neighbourhood. Densification Alignment overlays OurWinnipeg 2045 growth zones against current transit coverage, revealing where planned density lacks transit support. The dashboard reads from a curated serving database rather than running analysis on the fly, ensuring that interactive exploration always reflects the same results published in this report.
+An interactive 8-tab Streamlit dashboard was developed to support exploration and interpretation of the analytical results in a more accessible way. The Overview tab presents summary metrics including route counts, stop counts, and changes in ridership. The Map tab renders the full transit network using PyDeck with PTN tiers colour-coded to clearly show differences in service structure. The Coverage tab examines stop density and jobs accessibility to identify underserved neighbourhoods, while the Network tab ranks key hubs using betweenness and PageRank centrality and visualizes Louvain communities. The Frequency tab summarizes scheduled service patterns including headway comparisons across PTN tiers, and the Live tab connects to the Winnipeg Transit API to display real-time vehicle positions and service alerts.
 
-% =========================================================
+Particular attention is given to the Equity Deep Dive and Densification Alignment tabs. The Equity Deep Dive tab presents the income quintile analysis (Table~\ref{tab:quintile}), as shown in Figure~\ref{fig:dashboard}, and allows for neighbourhood-level comparison of transit access and stop density. The results show a non-linear relationship between income and access, where the lowest-income quintile has the highest median access score at 52.63, followed by Q2 at 38.28, Q3 at 28.83, Q5 at 21.78, and Q4 at 20.63. This pattern reflects the concentration of transit infrastructure in inner-city areas and highlights that higher proximity does not necessarily correspond to better service quality.
+
+The Densification Alignment tab overlays current stop locations with OurWinnipeg 2045 planning zones, including mixed-use corridors, regional centres, and redevelopment areas. This view highlights where existing transit service aligns with planned growth and where gaps remain. In combination with the equity analysis, this makes it possible to identify areas where future densification is not currently supported by sufficient transit infrastructure.
+
+To ensure consistency, the dashboard reads from a curated serving database rather than recomputing results dynamically. This guarantees that the interactive outputs reflect the same validated results presented in this report.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{equity_dashboard}
+\hfill
+\includegraphics[width=0.48\textwidth]{densification_dashboard}
+\caption{Dashboard views. Left: Equity Deep Dive showing income quintile accessibility. Right: Densification Alignment showing transit coverage relative to planned growth zones.}
+\label{fig:dashboard}
+\end{figure}
+
 \section{Results}
 % =========================================================
 
@@ -708,7 +722,7 @@ final report for our group project.
 Ahmed Hasan & ASH & April 6, 2026 \\
 Cathy Li & & \\
 Sudipta Sarker & & \\
-Stephenie Michael & & \\
+Stephenie Michael & SCM & April 6, 2026 \\
 \bottomrule
 \end{tabular}
 \end{table}
