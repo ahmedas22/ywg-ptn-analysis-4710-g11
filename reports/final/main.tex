@@ -145,8 +145,6 @@ Headways flat (31.0$\to$31.9 min) & \$8.5M fare-revenue shortfall (Q3 forecast) 
 \section{Literature Review: Algorithmic Fairness in Transit}
 % =========================================================
 
-\section{Literature Review: Algorithmic Fairness in Transit}
-
 Transit network redesigns have accelerated globally, driven by budget constraints and ridership-optimization objectives. We situate our work in three streams.
 
 \textbf{Bus network redesigns (BNR).} Situ \& Karner (2025) reviewed 45 bus network redesigns across 40 agencies and found that equity considerations are ``frequently absent from the objective function'' even when stated as design goals. Conway et al.\ (2017, 2018) demonstrated that accessibility-based evaluation using detailed travel time matrices reveals distributional impacts invisible in aggregate ridership metrics. Most redesigns focus on making routes simpler and cutting costs, but agencies check equity later without changing the design (Situ \& Karner, 2025). So simple measures like stops per person are not enough to show the real impact (Conway et al., 2017, 2018). This matters to Winnipeg because the PTN used a grid design to make routes look clean. However, an accessibility check would have shown that removing direct suburban routes and forcing transfers downtown would hurt low income riders, cross city travelers, and seniors.
@@ -191,21 +189,21 @@ A two-month GPS data gap (September--October 2025) is addressed in Section~3.9.
 
 \subsection{Association Rule Mining}
 
-We binarize 15+ neighbourhood features against their medians and apply the Apriori algorithm (mlxtend~0.23.4) with minimum support$=0.15$, minimum confidence$=0.5$, minimum lift$=1.0$ and maximum itemset length$=3$. Features include high density, low stop density, high transit commute share, low income, high seniors share, high immigrant share, underserved status, and poverty indicators from both Low Income Measure After Tax (LIM-AT) and Market Basket Measure (MBM).
+We binarize 15+ neighbourhood features against their medians and apply the Apriori algorithm (Agrawal \& Srikant, 1994; mlxtend~0.23.4) with minimum support$=0.15$, minimum confidence$=0.5$, minimum lift$=1.0$ and maximum itemset length$=3$. Features include high density, low stop density, high transit commute share, low income, high seniors share, high immigrant share, underserved status, and poverty indicators from both Low Income Measure After Tax (LIM-AT) and Market Basket Measure (MBM).
 
 \subsection{Clustering}
 
-K-means clustering ($k=4$, selected via elbow method with silhouette validation) groups routes by normalized hourly departure profiles, capturing when each route operates throughout the day. We validate with Calinski-Harabasz and Davies-Bouldin indices and compare against DBSCAN to assess cluster stability. Ward hierarchical clustering validates the K-means solution: the Adjusted Rand Index between K-means and hierarchical assignments confirms agreement.
+K-means clustering (MacQueen, 1967; $k=4$, selected via elbow method with silhouette validation) groups routes by normalized hourly departure profiles, capturing when each route operates throughout the day. We validate with Calinski-Harabasz and Davies-Bouldin indices and compare against DBSCAN to assess cluster stability. Ward hierarchical clustering validates the K-means solution: the Adjusted Rand Index between K-means and hierarchical assignments confirms agreement.
 
 For neighbourhoods, K-means ($k=4$) clusters by stop count, stop density and jobs accessibility score. Silhouette scores confirm cluster separation.
 
 \subsection{Classification}
 
-Random Forest classifiers predict PTN tier (route-level) and coverage category (neighbourhood-level) using 5-fold stratified cross-validation. We report macro and weighted F1-scores, area under the ROC curve (one-vs-rest) and compare against Naive Bayes and Gradient Boosting baselines. Principal Component Analysis (PCA) on the 8 census features confirms that the first three components explain 77\% of variance (PC1 loads on transit commute and car commute, while PC2 loads on cycling and seniors), validating the feature set prior to classification.
+Random Forest classifiers (Breiman, 2001), implemented in scikit-learn (Pedregosa et al., 2011), predict PTN tier (route-level) and coverage category (neighbourhood-level) using 5-fold stratified cross-validation. We report macro and weighted F1-scores, area under the ROC curve (one-vs-rest) and compare against Naive Bayes and Gradient Boosting baselines. Principal Component Analysis (PCA) on the 8 census features confirms that the first three components explain 77\% of variance (PC1 loads on transit commute and car commute, while PC2 loads on cycling and seniors), validating the feature set prior to classification.
 
 \subsection{Network Communities}
 
-We model the transit system as a weighted directed graph ($V=3{,}873$ stops, $E = 4{,}663$ connections) and compute degree centrality, betweenness centrality Louvain community detection (seed=42 for reproducibility) and PageRank centrality. PageRank complements degree and betweenness metrics by identifying structurally important hubs that serve as network backbone. Clustering coefficient and degree assortativity characterize network topology. Louvain community detection groups stops into 15 service regions that match neighbourhood boundaries. The algorithm had no map data, but it used which stops connect and how often trips run between them. However, the groups it found match real barriers in the city, such as railway lines. This is blind math proof because the network alone shows the barrier effect of the CN and CP rail lines. When we put the groups on a map, they break along these rail lines. For a rider, going from the North End to Fort Garry is hard because there are only a few underpasses and overpasses. So the groups clearly show this break in the city. Betweenness centrality shows the most important hubs, and degree centrality shows the main backbone stops. The groups are not random, but they show how the city is split by rail lines. So the meaning for the PTN is clear. A grid design makes travel harder at the few crossing points. Future changes must fund better crossings at key boundaries, or redesign routes so riders cross rail lines fewer times in one trip.
+We model the transit system as a weighted directed graph ($V=3{,}873$ stops, $E = 4{,}663$ connections) and compute degree centrality, betweenness centrality, Louvain community detection (Blondel et al., 2008; seed=42 for reproducibility), and PageRank centrality. PageRank complements degree and betweenness metrics by identifying structurally important hubs that serve as network backbone. Clustering coefficient and degree assortativity characterize network topology. Louvain community detection groups stops into 58 service regions that match neighbourhood boundaries. The algorithm had no map data, but it used which stops connect and how often trips run between them. However, the groups it found match real barriers in the city, such as railway lines. This is blind math proof because the network alone shows the barrier effect of the CN and CP rail lines. When we put the groups on a map, they break along these rail lines. For a rider, going from the North End to Fort Garry is hard because there are only a few underpasses and overpasses. So the groups clearly show this break in the city. Betweenness centrality shows the most important hubs, and degree centrality shows the main backbone stops. The groups are not random, but they show how the city is split by rail lines. So the meaning for the PTN is clear. A grid design makes travel harder at the few crossing points. Future changes must fund better crossings at key boundaries, or redesign routes so riders cross rail lines fewer times in one trip.
 
 \subsection{Accessibility and Equity}
 
@@ -269,12 +267,11 @@ The Densification Alignment tab overlays current stop locations with OurWinnipeg
 
 To ensure consistency, the dashboard reads from a curated serving database rather than recomputing results dynamically. This guarantees that the interactive outputs reflect the same validated results presented in this report.
 
-\begin{figure}[H]
+\begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.48\textwidth]{equity_dashboard}
-\hfill
-\includegraphics[width=0.48\textwidth]{densification_dashboard}
-\caption{Dashboard views. Left: Equity Deep Dive showing income quintile accessibility. Right: Densification Alignment showing transit coverage relative to planned growth zones.}
+\includegraphics[width=0.85\textwidth]{equity_dashboard}\\[6pt]
+\includegraphics[width=0.85\textwidth]{densification_dashboard}
+\caption{Dashboard views. Top: Equity Deep Dive showing income quintile accessibility. Bottom: Densification Alignment showing transit coverage relative to planned growth zones.}
 \label{fig:dashboard}
 \end{figure}
 
@@ -457,7 +454,7 @@ The PTN therefore produces a distinction between \emph{paper equity} and \emph{l
 }{%
   \fbox{\parbox{0.8\textwidth}{\centering\vspace{2em}\textbf{[FIGURE: Equity by Income Quintile]}\vspace{2em}}}%
 }
-\caption{Box plots of transit access score (left) and stop density (right) by income quintile. Q1 (lowest income, inner-city) has the highest median access and widest spread. The subtitle captures the paradox: proximity does not equal service quality.}
+\caption{Median and mean transit access score by income quintile. Q1 (lowest income, inner-city) shows the highest scores; Q4 the lowest. The Q1$\to$Q5 median gap is $-58.9$\%: lower-income neighbourhoods are closer to more stops, but proximity does not equal service quality.}
 \label{fig:equity_quintile}
 \end{figure}
 
@@ -492,7 +489,7 @@ This matters because equity weighting materially changes who appears most urgent
 }{%
   \fbox{\parbox{0.8\textwidth}{\centering\vspace{2em}\textbf{[FIGURE: Poverty-Transit Correlation]}\vspace{2em}}}%
 }
-\caption{Income vs.\ transit access by neighbourhood ($r = -0.47$, dashed regression line). Colour encodes transit commute share. Lower income correlates with higher access scores, but not better service quality.}
+\caption{Median household income vs.\ transit access score across all 237 neighbourhoods ($R^2 = 0.218$, regression line shown). Lower income correlates with higher proximity-based access scores, the inverse of what standard equity models predict, but proximity does not capture service quality.}
 \label{fig:poverty_correlation}
 \end{figure}
 
@@ -529,21 +526,22 @@ target is itself a policy decision with distributional consequences.
 }{%
   \fbox{\parbox{0.8\textwidth}{\centering\vspace{2em}\textbf{[FIGURE: Prescriptive Counterfactual Reranking]}\vspace{2em}}}%
 }
-\caption{Prescriptive counterfactual: current rank vs.\ equity-weighted rank.
-Points below the diagonal gained priority under equity weighting, while those above lost priority.}
+\caption{Prescriptive counterfactual: change in priority rank under equity weighting. Green bars to the right show neighbourhoods that gained rank because vulnerability indices (low income, transit dependence, seniors share) were incorporated into the objective; red bars to the left show neighbourhoods that lost rank. Top gainers include Alpine Place ($+44$), Valhalla ($+37$) and Pembina Strip ($+36$); top losers include affluent suburbs like Wellington Crescent and Tuxedo. 209 of 237 neighbourhoods (88.2\%) reprioritized.}
 \label{fig:counterfactual}
-\end{figure}% =========================================================
+\end{figure}
+
+% =========================================================
 \section{Discussion}
 % =========================================================
 
 \textbf{Paper equity vs.\ lived equity.} Our proximity model gives inner-city neighbourhoods like Lord Selkirk Park and Spence the highest transit scores in the city. The BIZ survey shows these same neighbourhoods report 70\% dissatisfaction. The model counts nearby stops. It cannot count the buses that pass you up, the transfers that don't connect, or the sidewalks buried under snow from November to March. Q1 neighbourhoods gained 9.1\% in proximity after the PTN launch, yet a separate rider survey found 70\% of low-income respondents dissatisfied. The PTN improved the score while degrading the experience. The association rules caught what the proximity model missed: \{underserved\} co-occurs with \{low\_income, low\_stop\_density\} not because these neighbourhoods lack nearby stops, but because the service at those stops has degraded. A rider taking the FX3 at 7:22 needs Route~74 at 7:53. Miss it by two minutes and the next one is at 8:11, 18 minutes in the cold. The 75-minute transfer window started at 7:22. By the time the second leg finishes, it may have expired. For a minimum-wage worker, that is a second fare they cannot afford.
 
-\textbf{Design vs.\ operations.} Stantec built a geometry-first grid using proprietary origin-destination models, but publicly available Freedom of Information and Protection of Privacy Act (FIPPA) responses from late 2024 and early 2025, filed months before the PTN launch, show the City lacked the operational backend to run it. They have no formal policies for adjusting schedules (FIPPA~25-02-0253), no ability to track staff vacancies (25-02-0262), and no safety tracking (24-12-2017). The design might look optimal on a map, but it failed because it assumed perfect operational execution that Winnipeg Transit does not have.
+\textbf{Design vs.\ operations.} Stantec built a geometry-first grid (Kurylko \& Masterton, 2024) using proprietary origin-destination models, but publicly available Freedom of Information and Protection of Privacy Act (FIPPA) responses from late 2024 and early 2025, filed months before the PTN launch, show the City lacked the operational backend to run it. They have no formal policies for adjusting schedules (FIPPA~25-02-0253), no ability to track staff vacancies (25-02-0262), and no safety tracking (24-12-2017). The design might look optimal on a map, but it failed because it assumed perfect operational execution that Winnipeg Transit does not have.
 
 \textbf{Limitations.} Census 2021 income data references 2020, a COVID year that may understate recovery incomes. The BIZ survey is self-selected ($n=1{,}395$) and likely overrepresents dissatisfied riders. The GPS data gap (Sep--Oct 2025) reduces on-time performance sample size.
 
 \textbf{Edmonton comparison.}
-Edmonton's April 2021 redesign achieved over 15\% ridership growth by 2024 through iterative post-launch adjustments, historically higher per-capita spending (CCPA 2018 documented \$335 vs.\ \$200 based on 2015 Canadian Urban Transit Association data), and existing light rail transit (LRT) infrastructure. Winnipeg replaced every route overnight on June 29, 2025 with no parallel service, no transition, no way to learn the new map gradually. Riders woke up and their bus was gone. Edmonton iterated. Winnipeg imposed.
+Edmonton's April 2021 redesign achieved over 15\% ridership growth by 2024 (Edmonton Transit Service, 2024) through iterative post-launch adjustments, historically higher per-capita spending (CCPA 2018 documented \$335 vs.\ \$200 based on 2015 Canadian Urban Transit Association data), and existing light rail transit (LRT) infrastructure. Winnipeg replaced every route overnight on June 29, 2025 with no parallel service, no transition, no way to learn the new map gradually. Riders woke up and their bus was gone. Edmonton iterated. Winnipeg imposed.
 
 \textbf{The Stantec critique.} Stantec designed the PTN using proprietary cellphone mobility data and a ``bespoke analytics dashboard.'' We evaluate what they designed using 109.8M+ open-source records and 10 data mining techniques. Good data and a geometry-first design do not guarantee good outcomes when the objective function is too narrow and the operating environment cannot execute it.
 
@@ -709,7 +707,7 @@ Counterfactual & z-score vulnerability weighting & 88.2\% reprioritized \\
 \item Produced the coverage and equity analysis results, including income-quintile accessibility, poverty overlay, coverage change, underserved neighbourhood ranking, and equity-weighted reranking (\texttt{1.3-sudipta-pr2-coverage.ipynb} and \texttt{1.4-sudipta-final-equity.ipynb})
 \item Generated and validated Figures 6--10 outputs used for income quintile analysis, poverty/access correlation, coverage change mapping, underserved neighbourhood ranking, and equity-weighted reranking
 \item Wrote Sections 5.7 (Equity by Income Quintile) and 5.8 (Poverty Overlay and Coverage Densification)
-\item Interpretated the coverage/equity figures.
+\item Interpreted the coverage/equity figures.
 \item Presented Sections 5.7--5.8 in the oral presentation
 \end{itemize}
 
